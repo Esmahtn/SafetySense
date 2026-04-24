@@ -134,8 +134,9 @@ class PedestrianEngine:
             print(f"[{self.camera_name}] HATA: Video/Kamera acilamadi: {self.source}")
             return
             
-        # Videoyu 4:40'dan (280. saniye) başlat
-        cap.set(cv2.CAP_PROP_POS_MSEC, 280 * 1000)
+        # Videoyu belirtilen süreden (Varsayılan 4:30) başlat
+        start_sec = getattr(self, 'cap_start_time', 270)
+        cap.set(cv2.CAP_PROP_POS_MSEC, start_sec * 1000)
             
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -161,12 +162,23 @@ class PedestrianEngine:
                 
             frame_count += 1
             
-            # FPS ARTIRMA TWEAK: Her 3 kareden sadece 1'ini işle (işlemi %66 hızlandırır)
+            # GÖRÜNTÜ GÜNCELLEME (Turbo): Analizden bağımsız olarak her kareyi ekrana bas
+            display_frame = frame.copy()
+            # ROI bölgesini çiz (Şeffaf Sarı)
+            overlay = display_frame.copy()
+            cv2.fillPoly(overlay, [self.roi_polygon], (0, 255, 255))
+            cv2.addWeighted(overlay, 0.2, display_frame, 0.8, 0, display_frame)
+            cv2.polylines(display_frame, [self.roi_polygon], True, (0, 200, 200), 2)
+            
+            preview = cv2.resize(display_frame, (800, 450))
+            self.frame_buffer.append(preview)
+            _, buffer = cv2.imencode('.jpg', preview)
+            self.current_frame = buffer.tobytes()
+
+            # ANALİZ: Her 3 kareden sadece 1'inde yap
             if frame_count % 3 != 0:
                 continue
             
-            # YOLO Nesne Tespiti (Çok daha hafif ve hızlı)
-            # sınıflar=0 (sadece insan), conf=0.15 (uzaktakileri daha rahat yakalar), imgsz=480 (kasmayı azaltır)
             results = self.model.track(frame, persist=True, classes=[0], conf=0.15, imgsz=480, verbose=False)
             
             # Görselleştirme için kopya
@@ -208,10 +220,11 @@ class PedestrianEngine:
                     if in_roi:
                         self.person_in_roi_frames[track_id] = self.person_in_roi_frames.get(track_id, 0) + 1
                         
-                        # 5 frame üst üste bölgedeyse ihlal say (yanlış tespitleri engellemek için)
-                        if self.person_in_roi_frames[track_id] >= 5 and track_id not in self.pedestrian_logged:
-                            self.pedestrian_logged.add(track_id)
-                            self.log_violation(track_id, frame, box) # Orijinal frame'i kaydet (çizimsiz)
+                        # 5 frame üst üste bölgedeyse ihlal say
+                        if self.person_in_roi_frames[track_id] >= 5:
+                            if track_id not in self.pedestrian_logged:
+                                self.pedestrian_logged.add(track_id)
+                                self.log_violation(track_id, frame, box)
                             
                         # Bölgedeki kişiyi kırmızı çerçeve ile göster
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)

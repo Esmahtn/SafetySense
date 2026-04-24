@@ -145,6 +145,12 @@ function App() {
             >
               🚶 Yaya İhlal Takibi
             </button>
+            <button 
+              onClick={() => setActiveTab('hiz')} 
+              className={`px-6 py-2 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'hiz' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'bg-[#1a1d23] text-gray-400 hover:text-white hover:bg-white/5'}`}
+            >
+              ⚡ Hız İhlal Takibi
+            </button>
           </div>
 
           {/* Canlı Kamera Akışları */}
@@ -152,13 +158,18 @@ function App() {
             <div className="bg-[#1a1d23] border border-white/5 rounded-3xl overflow-hidden p-5 shadow-lg">
               <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
                 <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                {activeTab === 'ters_yon' ? 'Ana Koridor (Ters Yön) Canlı' : 'Güvensiz Bölge (Yaya) Canlı'}
+                {activeTab === 'ters_yon' ? 'Ana Koridor (Ters Yön) Canlı' : 
+                 activeTab === 'yaya' ? 'Güvensiz Bölge (Yaya) Canlı' : 'Hız Koridoru Canlı'}
               </h2>
               <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-white/5">
-                {activeTab === 'ters_yon' ? (
-                  <img src={`${API_BASE}/vehicle_stream`} className="w-full h-full object-contain" alt="Ters Yön Canlı" onError={(e) => { e.target.onerror = null; e.target.src = ""; e.target.alt="Kamera Çevrimdışı"; }} />
-                ) : (
-                  <img src={`${API_BASE}/pedestrian_stream`} className="w-full h-full object-contain" alt="Yaya Tespiti Canlı" onError={(e) => { e.target.onerror = null; e.target.src = ""; e.target.alt="Kamera Çevrimdışı"; }} />
+                {activeTab === 'ters_yon' && (
+                  <img src={`${API_BASE}/vehicle_stream`} className="w-full h-full object-contain" alt="Ters Yön Canlı" />
+                )}
+                {activeTab === 'yaya' && (
+                  <img src={`${API_BASE}/pedestrian_stream`} className="w-full h-full object-contain" alt="Yaya Tespiti Canlı" />
+                )}
+                {activeTab === 'hiz' && (
+                  <img src={`${API_BASE}/speed_stream`} className="w-full h-full object-contain" alt="Hız Takibi Canlı" />
                 )}
               </div>
             </div>
@@ -203,9 +214,11 @@ function App() {
             // Sekme filtrelemesi
             let tabFiltered = stats.history;
             if (activeTab === 'ters_yon') {
-              tabFiltered = stats.history.filter(item => !item.type.includes("Yaya"));
-            } else {
+              tabFiltered = stats.history.filter(item => item.type.includes("Ters Yön"));
+            } else if (activeTab === 'yaya') {
               tabFiltered = stats.history.filter(item => item.type.includes("Yaya"));
+            } else {
+              tabFiltered = stats.history.filter(item => item.type.includes("Hız"));
             }
 
             // Tarih filtrelemesi
