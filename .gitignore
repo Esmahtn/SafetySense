@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.env
+
+# Database and logs
+violations.db
+ihlal_kayitlari/
+video/
+*.avi
+*.mp4
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.log
+
+# Node / Frontend
+node_modules/
+**/node_modules/
+dist/
+dist-ssr/
+*.local
+.vscode/
+.idea/
+
+# Models
+*.pt
+*.onnx
+*.engine
+
+# OS
+.DS_Store
+Thumbs.db
