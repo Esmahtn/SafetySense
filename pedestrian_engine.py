@@ -176,7 +176,7 @@ class PedestrianEngine:
             self.current_frame = buffer.tobytes()
 
             # ANALİZ: Her 3 kareden sadece 1'inde yap
-            if frame_count % 3 != 0:
+            if frame_count % 2 != 0:
                 continue
             
             results = self.model.track(frame, persist=True, classes=[0], conf=0.15, imgsz=480, verbose=False)

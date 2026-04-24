@@ -154,14 +154,11 @@ class SpeedEngine:
             h_orig, w_orig, _ = frame.shape
             frame_counter += 1
             
-            # GÖRÜNTÜ GÜNCELLEME (Turbo): Her kareyi ekrana bas
-            preview = cv2.resize(frame, (800, 450))
-            self.frame_buffer.append(preview)
-            _, buffer = cv2.imencode('.jpg', preview)
-            self.current_frame = buffer.tobytes()
+            # Çizim yapılacak kopya
+            display_frame = frame.copy()
 
-            if frame_counter % 3 == 0:
-                results = self.model.track(frame, persist=True, classes=[2, 5, 7], imgsz=480, conf=0.15, verbose=False)
+            # Her karede analiz yap
+            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.15, verbose=False)
                 
             if results and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -173,13 +170,18 @@ class SpeedEngine:
                     
                     if id not in self.track_history:
                         self.track_history[id] = deque(maxlen=20)
-                    
-                    self.track_history[id].append((time.time(), cy))
+
+                    # Video FPS'ine dayalı sanal zaman kullan (CPU kasması hızı bozmasın)
+                    if not hasattr(self, 'frame_count'):
+                        self.frame_count = 0
+                    self.frame_count += 1
+                    virtual_time = self.frame_count / self.fps
+                    self.track_history[id].append((virtual_time, cy))
                     
                     # Hız Hesapla
                     speed = self.calculate_speed(self.track_history[id])
                     
-                    # Görselleştirme
+                    # Görselleştirme (Stream için)
                     color = (0, 255, 0)
                     if speed > 20:
                         color = (0, 0, 255)
@@ -187,16 +189,16 @@ class SpeedEngine:
                             self.vehicle_logged.add(id)
                             self.log_violation(id, frame, speed, box)
                             
-                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color, 2)
-                    cv2.putText(frame, f"ID:{id} {speed:.1f} km/h", (box[0], box[1]-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    cv2.rectangle(display_frame, (box[0], box[1]), (box[2], box[3]), color, 3)
+                    cv2.putText(display_frame, f"ID:{id} {speed:.1f} km/h", (box[0], box[1]-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
             # Görsel efekt (ihlal anında kırmızı çerçeve)
             if self.alert_timer > 0:
-                cv2.rectangle(frame, (0,0), (w_orig, h_orig), (0,0,255), 15)
+                cv2.rectangle(display_frame, (0,0), (w_orig, h_orig), (0,0,255), 15)
                 self.alert_timer -= 1
 
-            preview = cv2.resize(frame, (800, 450))
+            preview = cv2.resize(display_frame, (800, 450))
             self.frame_buffer.append(preview)
             
             # Aktif video kayıtlarını güncelle
