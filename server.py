@@ -283,12 +283,17 @@ class CameraEngine:
     def get_frame(self): return self.current_frame
 
 # --- Engine Setup ---
-engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi")
-# Yaya kamerası
-engine2 = PedestrianEngine(2, "Güvensiz Bölge", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
+# ÖRNEK: rtsp://kullanici:sifre@ip_adresi:port/yol
+# Kendi bilgilerinizle değiştirmek için aşağıdaki satırları kullanabilirsiniz:
 
-# Hız kamerası
-engine3 = SpeedEngine(3, "Hız Koridoru", "video/192.168.12.5_ch50_20260422112304_20260422113058_hız.avi")
+engine1 = CameraEngine(1, "Ana Koridor", "rtsp://admin:Sifre123@192.168.1.50:554/Streaming/Channels/101")
+engine2 = PedestrianEngine(2, "Güvensiz Bölge", "rtsp://admin:Sifre123@192.168.1.51:554/Streaming/Channels/101")
+engine3 = SpeedEngine(3, "Hız Koridoru", "rtsp://admin:Sifre123@192.168.1.52:554/Streaming/Channels/101")
+
+# Not: Test için video dosyası kullanmak isterseniz eski satırlar aşağıdadır:
+# engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi")
+# engine2 = PedestrianEngine(2, "Güvensiz Bölge", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
+# engine3 = SpeedEngine(3, "Hız Koridoru", "video/192.168.12.5_ch50_20260422112304_20260422113058_hız.avi")
 
 cameras = {1: engine1, 2: engine2, 3: engine3}
 
