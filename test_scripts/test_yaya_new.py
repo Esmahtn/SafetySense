@@ -49,7 +49,7 @@ def test_yaya():
         cv2.addWeighted(overlay, 0.2, display_frame, 0.8, 0, display_frame)
         cv2.polylines(display_frame, [scaled_roi], True, (0, 200, 200), 2)
         
-        results = model.track(frame, persist=True, classes=[0], verbose=False)
+        results = model.track(frame, persist=True, classes=[0], conf=0.08, imgsz=320, tracker="botsort_custom.yaml", verbose=False)
         
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -68,10 +68,16 @@ def test_yaya():
                 is_violation = person_in_roi_frames.get(id, 0) >= 10
                 
                 color = (0, 0, 255) if is_violation else (0, 255, 0)
-                label = "!!! YAYA IHLALI !!!" if is_violation else f"Person:{id}"
                 
                 cv2.rectangle(display_frame, (box[0], box[1]), (box[2], box[3]), color, 4)
-                cv2.putText(display_frame, label, (box[0], box[1]-15), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3)
+                # ID her zaman görünsün
+                cv2.putText(display_frame, f"ID:{id}", (box[0], box[1]-15), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3)
+                if is_violation:
+                    cv2.putText(display_frame, "!!! IHLAL !!!", (box[0], box[3]+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+
+        # Frame numarasını sol üste yaz (ID değişimini takip etmek için)
+        frame_no = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        cv2.putText(display_frame, f"Frame:{frame_no}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
 
         # Videoya çizimli frame'i yaz
         writer.write(display_frame)

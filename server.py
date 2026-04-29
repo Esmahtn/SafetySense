@@ -15,6 +15,7 @@ from ultralytics import YOLO
 from pedestrian_engine import PedestrianEngine
 from mailer import send_violation_email
 from speed_engine import SpeedEngine
+from async_camera import SmartCamera
 
 app = Flask(__name__)
 CORS(app)
@@ -25,8 +26,10 @@ if not os.path.exists(VIOLATIONS_DIR):
     os.makedirs(VIOLATIONS_DIR)
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20)
     cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS violations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,20 +44,42 @@ def init_db():
     conn.commit()
     conn.close()
 
+def cleanup_old_files(days=3):
+    """3 günden eski ihlal kayıtlarını diskten siler."""
+    try:
+        now = time.time()
+        retention_sec = days * 24 * 3600
+        count = 0
+        if os.path.exists(VIOLATIONS_DIR):
+            for f in os.listdir(VIOLATIONS_DIR):
+                f_path = os.path.join(VIOLATIONS_DIR, f)
+                if os.path.getmtime(f_path) < now - retention_sec:
+                    if os.path.isfile(f_path):
+                        os.remove(f_path)
+                        count += 1
+        if count > 0:
+            print(f"[TEMİZLİK] {count} adet eski dosya temizlendi ({days} gün kuralı).")
+    except Exception as e:
+        print(f"[TEMİZLİK HATA] {e}")
+
+def retention_worker():
+    while True:
+        cleanup_old_files(days=3)
+        time.sleep(3600) # Her saat başı kontrol et
+
 init_db()
+threading.Thread(target=retention_worker, daemon=True).start()
 sse_clients = []
 cameras = {}
 
 class CameraEngine:
-    def __init__(self, cam_id, name, source, model=None):
+    def __init__(self, cam_id, name, source, model=None, lock=None):
         self.cam_id = cam_id
         self.name = name
         self.source = source
         self.model = model if model else YOLO("yolo11n.pt")
-        self.cap = cv2.VideoCapture(source)
-        # Zaman Ayarı: Ters Yön için 2:40 (160 saniye)
-        if "ch49" in source or "ters" in source.lower():
-            self.cap.set(cv2.CAP_PROP_POS_MSEC, 160 * 1000)
+        self.cap = SmartCamera(source, simulate_live=True)
+        self.cap.start()
         self.current_frame = None
         self.fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -70,6 +95,8 @@ class CameraEngine:
         self.pos_history = {}
         self.post_reset_grace = {}
         self.last_alert_time = 0
+        self.last_global_violation_time = 0
+        self.violation_cooldown_sec = 20 # 20 saniye cooldown
         self.on_violation = None
         
         # Polygon ROI (User defined for ch49)
@@ -104,14 +131,28 @@ class CameraEngine:
                 cv2.imwrite(os.path.join(VIOLATIONS_DIR, crop_name), evidence_frame[y1:y2, x1:x2])
             except: cv2.imwrite(os.path.join(VIOLATIONS_DIR, crop_name), evidence_frame)
         
+        # Video Kaydı: Bağımsız writer kullan
         vid_path = os.path.join(VIOLATIONS_DIR, vid_name)
         writer = cv2.VideoWriter(vid_path, self.fourcc, self.fps, (800, 450))
+        email_info = {
+            'cam_name': self.name,
+            'violation_type': "Ters Yön İhlali",
+            'vehicle_id': int(vehicle_id),
+            'timestamp': timestamp_str,
+            'image_path': os.path.join(VIOLATIONS_DIR, img_name),
+            'video_path': vid_path,
+            'crop_path': os.path.join(VIOLATIONS_DIR, crop_name)
+        }
         if writer.isOpened():
             for buf_frame in self.frame_buffer:
                 writer.write(buf_frame)
-            self.active_writers.append({'writer': writer, 'frames_left': int(self.fps * 5)})
+            self.active_writers.append({
+                'writer': writer, 
+                'frames_left': int(self.fps * 10), # 10 saniyelik tam kayit
+                'email_info': email_info
+            })
         
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=20)
         cursor = conn.cursor()
         cursor.execute('INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path) VALUES (?, ?, ?, ?, ?, ?)',
                        (int(vehicle_id), self.name, "Ters Yön İhlali", timestamp_str, img_name, vid_name))
@@ -125,6 +166,7 @@ class CameraEngine:
 
     def process(self):
         frame_counter = 0
+        results = None
         while self.cap.isOpened():
             success, frame = self.cap.read()
             if not success: break
@@ -150,8 +192,8 @@ class CameraEngine:
             cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2)
 
             frame_counter += 1
-            # Her karede analiz yap (Debug için en hassas mod)
-            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.15, verbose=False)
+            # Stabilite ve Hız Modu (320px + 0.1 conf)
+            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.1, tracker="botsort.yaml", verbose=False)
             
             if results and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -159,41 +201,51 @@ class CameraEngine:
                 for box, id in zip(boxes, ids):
                     cx, cy = int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2)
                     
-                    # Görselleştirme (Stream için)
+                    # Görselleştirme (BÖLGE DIŞINDA OLSA BİLE ÇİZ)
                     color = (0, 255, 0)
                     label = f"Arac ID:{id}"
-                    
                     if id in self.violators: 
                         color = (0, 0, 255)
                         label = "!!! TERS YON IHLAL !!!"
-                        
                     cv2.rectangle(display_frame, (box[0], box[1]), (box[2], box[3]), color, 4)
                     cv2.putText(display_frame, label, (box[0], box[1]-15), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 3)
 
-                    # ROI Kontrolü (Merkez noktası yerine taban-orta noktası daha sağlıklı olabilir ama cx,cy ile devam ediyoruz)
-                    if cv2.pointPolygonTest(self.roi_polygon, (cx, cy), False) < 0:
+                    # ROI Kontrolü (Aracın alt orta noktası - Tampon ucu için daha hassas)
+                    base_x, base_y = cx, box[3] 
+                    if cv2.pointPolygonTest(self.roi_polygon, (float(base_x), float(base_y)), False) < 0:
                         continue
                     
                     self.track_age[id] = self.track_age.get(id, 0) + 1
-                    if id not in self.prev_positions: self.prev_positions[id] = cy; continue
-
+                    # Başlangıç noktasını sabitle (Eğer yoksa)
+                    if id not in self.start_points:
+                        self.start_points[id] = (cx, cy)
+                    
+                    if id not in self.prev_positions:
+                        self.prev_positions[id] = cy
+                        continue
+                        
                     dy = cy - self.prev_positions[id]
                     total_dy = cy - self.start_points.get(id, (cx, cy))[1]
                     total_dx = abs(cx - self.start_points.get(id, (cx, cy))[0])
 
                     # ── AKILLI YÖN FİLTRESİ ──
-                    if dy > 2:
+                    if dy > 10: # Ciddi bir asagi gidis yoksa sifirlama (Sarsinti onleyici)
                         self.violation_scores[id] = 0
                         self.start_points[id] = (cx, cy)
                     
-                    is_upward = total_dy < -40
-                    is_vertical_dominant = abs(total_dy) > (total_dx * 1.2) # Biraz esnetildi
+                    is_upward = total_dy < -3 # Sadece 3 piksel dikey hareket yetti (Iskence Hassasiyeti)
+                    is_vertical_dominant = abs(total_dy) > (total_dx * 0.2) # En ufak yukari egilimi yakalae eder
                     
-                    if is_upward and is_vertical_dominant and id not in self.vehicle_logged:
-                        if self.track_age.get(id, 0) >= 10: # Biraz esnetildi
-                            self.vehicle_logged.add(id)
-                            self.violators.add(id)
-                            self.log_violation(id, frame, box)
+                    if is_upward and is_vertical_dominant:
+                        current_time = time.time()
+                        is_spam = (current_time - self.last_global_violation_time) < self.violation_cooldown_sec
+                        
+                        if not is_spam and id not in self.vehicle_logged:
+                            if self.track_age.get(id, 0) >= 1: # İLK KAREDE YAKALA (Gecikme Sıfır)
+                                self.last_global_violation_time = current_time
+                                self.vehicle_logged.add(id)
+                                self.violators.add(id)
+                                self.log_violation(id, frame, box)
                     
                     self.prev_positions[id] = cy
 
@@ -202,34 +254,48 @@ class CameraEngine:
             _, buffer = cv2.imencode('.jpg', preview)
             self.current_frame = buffer.tobytes()
             
+            # CPU yükünü dengele ve akışı sabitle
+            time.sleep(0.01)
+            
             if hasattr(self, 'active_writers'):
                 for rec in self.active_writers[:]:
                     rec['writer'].write(preview)
                     rec['frames_left'] -= 1
-                    if rec['frames_left'] <= 0: rec['writer'].release(); self.active_writers.remove(rec)
+                    if rec['frames_left'] <= 0: 
+                        rec['writer'].release()
+                        self.active_writers.remove(rec)
         self.cap.release()
+        if hasattr(self, 'active_writers'):
+            for rec in self.active_writers:
+                rec['writer'].release()
+                if 'email_info' in rec:
+                    info = rec['email_info']
+                    send_violation_email(
+                        cam_name=info['cam_name'],
+                        violation_type=info['violation_type'],
+                        vehicle_id=info['vehicle_id'],
+                        timestamp=info['timestamp'],
+                        image_path=info['image_path'],
+                        video_path=info['video_path'],
+                        crop_path=info.get('crop_path')
+                    )
 
     def get_frame(self): return self.current_frame
 
 # --- Engine Setup ---
-shared_model = YOLO("yolo11n.pt")
-engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi", model=shared_model)
-# Yaya için 4:30 (270 saniye)
+engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi")
+# Yaya kamerası
 engine2 = PedestrianEngine(2, "Güvensiz Bölge", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
-engine2.cap_start_time = 270 # PedestrianEngine içinde bunu kullanacağız
 
-# Hız için 2:30 (150 saniye)
+# Hız kamerası
 engine3 = SpeedEngine(3, "Hız Koridoru", "video/192.168.12.5_ch50_20260422112304_20260422113058_hız.avi")
-engine3.cap.set(cv2.CAP_PROP_POS_MSEC, 150 * 1000)
 
 cameras = {1: engine1, 2: engine2, 3: engine3}
 
 def notify(data):
     msg = json.dumps(data)
     for q in sse_clients: q.put(msg)
-    img_path = os.path.join(VIOLATIONS_DIR, data.get('img', ''))
-    vid_path = os.path.join(VIOLATIONS_DIR, data.get('video', ''))
-    threading.Thread(target=send_violation_email, args=(data['cam_name'], data['type'], data['id'], data['time'], img_path, vid_path), daemon=True).start()
+    # E-posta gönderimi artık her engine'in kendi içindeki deferred logic'i (active_writers) ile yapılıyor.
 
 engine1.on_violation = notify
 engine2.on_violation = notify
@@ -297,7 +363,7 @@ def delete_multiple():
     data = request.json
     ids = data.get('ids', [])
     if ids:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=20)
         cursor = conn.cursor()
         placeholders = ', '.join(['?'] * len(ids))
         cursor.execute(f'DELETE FROM violations WHERE id IN ({placeholders})', ids)

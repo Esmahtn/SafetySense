@@ -1,75 +1,93 @@
 import smtplib
 import os
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
+from email.mime.base import MIMEBase
+from email import encoders
 
 # ---------------------------------------------------------
-# E-POSTA AYARLARI (Burayı kendi mailinize göre doldurun)
+# E-POSTA AYARLARI
 # ---------------------------------------------------------
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-SENDER_EMAIL = "sizin_mailiniz@gmail.com"
-SENDER_PASSWORD = "gmail_uygulama_sifresi" # Normal şifre değil, 16 haneli uygulama şifresi
-TARGET_EMAIL = "isg_uzmani@sirket.com" # Bildirimin gideceği e-posta adresi
+SENDER_EMAIL = "esmahatunakbulut5@gmail.com"   # <-- Gmail adresinizi girin
+SENDER_PASSWORD = "erlkpdfbvpprsxjv"  # <-- 16 haneli uygulama şifresini girin
+TARGET_EMAIL = "esmahtnak@gmail.com"
 # ---------------------------------------------------------
 
-def send_violation_email(cam_name, violation_type, vehicle_id, timestamp, image_path):
-    """İhlal durumunda e-posta gönderen fonksiyon."""
-    
-    # Ayarlar girilmediyse gönderme işlemini atla (test/geliştirme aşaması için)
+
+def send_violation_email(cam_name, violation_type, vehicle_id, timestamp, image_path, video_path=None, crop_path=None):
+    """İhlal durumunda resim, crop (yakınlaştırma) ve video ekli e-posta gönderir (arka planda çalışır)."""
+    thread = threading.Thread(
+        target=_send,
+        args=(cam_name, violation_type, vehicle_id, timestamp, image_path, video_path, crop_path),
+        daemon=True
+    )
+    thread.start()
+
+
+def _send(cam_name, violation_type, vehicle_id, timestamp, image_path, video_path, crop_path):
     if SENDER_EMAIL == "sizin_mailiniz@gmail.com":
-        print(f"[MAILER] E-posta ayarları yapılmadığı için bildirim gönderilmedi: {violation_type}")
-        return False
-        
+        print(f"[MAILER] E-posta ayarları yapılmadı, gönderilmedi.")
+        return
+
     try:
         msg = MIMEMultipart()
         msg['From'] = SENDER_EMAIL
         msg['To'] = TARGET_EMAIL
-        msg['Subject'] = f"🚨 DİKKAT: İSG İhlali Tespit Edildi ({violation_type})"
-        
-        body = f"""
-        Merhaba,
-        
-        Sistem otomatik olarak yeni bir İş Sağlığı ve Güvenliği (İSG) ihlali tespit etti.
-        
-        Detaylar:
-        - Kamera / Bölge: {cam_name}
-        - İhlal Türü: {violation_type}
-        - Araç / Kişi ID: {vehicle_id}
-        - Tarih ve Zaman: {timestamp}
-        
-        İhlal anına ait kanıt fotoğrafı ektedir. Lütfen kontrol ediniz.
-        
-        İyi çalışmalar,
-        Otomatik İSG Gözlem Sistemi
-        """
+        msg['Subject'] = f"🚨 İSG İhlali: {violation_type} - {cam_name}"
+
+        body = f"""Merhaba,
+
+Sistem bir İSG ihlali tespit etti.
+
+📍 Kamera   : {cam_name}
+⚠️  İhlal    : {violation_type}
+🆔 ID        : {vehicle_id}
+🕐 Zaman    : {timestamp}
+
+İhlal anı fotoğrafı ve kısa video kaydı ektedir.
+
+Otomatik İSG Gözlem Sistemi
+"""
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
-        
-        # Fotoğrafı Ekle
-        if os.path.exists(image_path):
+
+        # Fotoğraf ekle
+        if image_path and os.path.exists(image_path):
             with open(image_path, 'rb') as f:
-                img_data = f.read()
-            image = MIMEImage(img_data, name=os.path.basename(image_path))
-            msg.attach(image)
-        else:
-            print(f"[MAILER] Ek dosyası bulunamadı: {image_path}")
+                img = MIMEImage(f.read(), name=os.path.basename(image_path))
+            msg.attach(img)
             
-        # Gönderim işlemi
+        # Yakınlaştırılmış Fotoğraf (Crop) ekle
+        if crop_path and os.path.exists(crop_path):
+            with open(crop_path, 'rb') as f:
+                crop = MIMEImage(f.read(), name=os.path.basename(crop_path))
+            msg.attach(crop)
+
+        # Video ekle
+        if video_path and os.path.exists(video_path):
+            with open(video_path, 'rb') as f:
+                vid = MIMEBase('application', 'octet-stream')
+                vid.set_payload(f.read())
+            encoders.encode_base64(vid)
+            vid.add_header('Content-Disposition', 'attachment',
+                           filename=os.path.basename(video_path))
+            msg.attach(vid)
+
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.send_message(msg)
         server.quit()
-        
-        print(f"[MAILER] E-posta başarıyla gönderildi: {TARGET_EMAIL}")
-        return True
-        
-    except Exception as e:
-        print(f"[MAILER] E-posta gönderilirken hata oluştu: {str(e)}")
-        return False
 
-# Test için (Bu dosyayı tek başına çalıştırırsanız çalışır)
+        print(f"[MAILER] OK E-posta gönderildi -> {TARGET_EMAIL}")
+
+    except Exception as e:
+        print(f"[MAILER] HATA: {e}")
+
+
 if __name__ == "__main__":
     print("Test e-postası gönderiliyor...")
-    send_violation_email("Test Kamera", "Test İhlali", 99, "2026-04-24 15:00", "test_foto.jpg")
+    send_violation_email("Test Kamera", "Test İhlali", 99, "2026-04-29 09:18", "test_foto.jpg")

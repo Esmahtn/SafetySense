@@ -41,7 +41,7 @@ def main():
             
             # SpeedEngine'in içindeki mantığı çalıştır (her 2 karede bir)
             if frame_counter % 2 == 0:
-                results = engine.model.track(frame, persist=True, classes=[2, 5, 7], verbose=False)
+                results = engine.model.track(frame, persist=True, classes=[2, 5, 7], imgsz=640, tracker="botsort_custom.yaml", verbose=False)
                 
                 if results and results[0].boxes.id is not None:
                     boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)

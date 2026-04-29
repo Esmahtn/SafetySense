@@ -42,7 +42,7 @@ def test_new_roi():
         display_frame = frame.copy()
         cv2.polylines(display_frame, [scaled_roi], True, (255, 255, 0), 2)
         
-        results = model.track(frame, persist=True, classes=[2, 3, 5, 7], verbose=False)
+        results = model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, tracker="botsort_custom.yaml", verbose=False)
         
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)

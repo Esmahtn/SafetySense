@@ -6,6 +6,8 @@ import random
 from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
+from mailer import send_violation_email
+from async_camera import SmartCamera
 
 class SpeedEngine:
     def __init__(self, cam_id, name, source, model=None):
@@ -16,9 +18,8 @@ class SpeedEngine:
             self.model = model
         else:
             self.model = YOLO("yolo11n.pt")
-        self.cap = cv2.VideoCapture(source)
-        # Hız Koridoru Başlangıç: 2:30 (150 saniye)
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, 150 * 1000)
+        self.cap = SmartCamera(source, simulate_live=True)
+        self.cap.start()
         
         # Kamera FPS değerini al
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -33,8 +34,8 @@ class SpeedEngine:
         # Kalibrasyon: Pixels Per Meter (PPM)
         # Tünel derinliği için tahmini değer. Gerçek mesafe bilgisine göre güncellenmelidir.
         # Örneğin: 1 metre yolda yaklaşık 25 piksel yer değişimine denk geliyorsa PPM = 25
-        self.ppm = 25 
-        
+        # Kalibrasyon: 23 metre mesafe için ayarlandı
+        self.ppm = 13         
         # Takip Verileri
         self.track_history = {} # id -> deque of (timestamp, cy)
         self.violators = set()
@@ -42,6 +43,9 @@ class SpeedEngine:
         self.violation_count = 0
         self.alert_timer = 0
         self.vehicle_logged = set()
+        self.last_global_violation_time = 0
+        self.last_global_violation_time = 0
+        self.violation_cooldown_sec = 20 # Aynı araç/kameradan 20 saniye cooldown
         
         self.on_violation = None
         self.VIOLATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ihlal_kayitlari")
@@ -73,9 +77,11 @@ class SpeedEngine:
 
     def log_violation(self, vehicle_id, frame, speed, box=None):
         current_time = time.time()
-        # Spam Önleme
-        is_spam = (current_time - self.last_alert_time) < 15
+        # Spam Önleme (ID değişse bile aynı olayı tekrar loglama)
+        is_spam = (current_time - self.last_global_violation_time) < self.violation_cooldown_sec
         if is_spam: return
+        
+        self.last_global_violation_time = current_time
 
         timestamp = datetime.now().strftime("%H%M%S_%f")
         rand_suffix = random.randint(1000, 9999)
@@ -111,18 +117,29 @@ class SpeedEngine:
             for buf_frame in self.frame_buffer:
                 resized_frame = cv2.resize(buf_frame, (w, h))
                 writer.write(resized_frame)
-            self.active_writers.append({'writer': writer, 'frames_left': int(self.fps * 5)})
-        
-        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        violation_type = f"Hız İhlali ({speed:.1f} km/h)"
+            email_info = {
+                "cam_name": self.name,
+                "violation_type": f"Hız İhlali ({speed:.1f} km/h)",
+                "vehicle_id": int(vehicle_id),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "image_path": img_path,
+                "video_path": vid_path,
+                "crop_path": crop_path
+            }
+            self.active_writers.append({
+                'writer': writer, 
+                'frames_left': int(self.fps * 10), # 10 saniye kayıt
+                'email_info': email_info
+            })
         
         # DB Kaydı
-        conn = sqlite3.connect(self.DB_PATH)
+        db_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(self.DB_PATH, timeout=20)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (int(vehicle_id), self.name, violation_type, timestamp_str, img_name, vid_name))
+        ''', (vehicle_id, self.name, f"Hız İhlali ({speed:.1f} km/h)", db_timestamp, img_name, vid_name))
         conn.commit()
         last_id = cursor.lastrowid
         conn.close()
@@ -132,13 +149,15 @@ class SpeedEngine:
                 "id": int(vehicle_id),
                 "db_id": last_id,
                 "cam_name": self.name,
-                "type": violation_type,
-                "time": timestamp_str,
+                "type": f"Hız İhlali ({speed:.1f} km/h)",
+                "time": db_timestamp,
                 "img": img_name,
                 "crop": crop_name,
                 "video": vid_name,
                 "speed": speed
             })
+
+        # E-posta gönderimi video kaydı tamamlanınca (active_writers içinde) tetiklenecek.
 
         self.last_alert_time = current_time
         self.violation_count += 1
@@ -157,8 +176,8 @@ class SpeedEngine:
             # Çizim yapılacak kopya
             display_frame = frame.copy()
 
-            # Her karede analiz yap
-            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.15, verbose=False)
+            # Hız ve Akıcılık Modu (320px)
+            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.1, tracker="botsort.yaml", verbose=False)
                 
             if results and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -171,12 +190,9 @@ class SpeedEngine:
                     if id not in self.track_history:
                         self.track_history[id] = deque(maxlen=20)
 
-                    # Video FPS'ine dayalı sanal zaman kullan (CPU kasması hızı bozmasın)
-                    if not hasattr(self, 'frame_count'):
-                        self.frame_count = 0
-                    self.frame_count += 1
-                    virtual_time = self.frame_count / self.fps
-                    self.track_history[id].append((virtual_time, cy))
+                    # Canlı yayınlarda gerçek zaman kullan (CPU gecikmeleri hızı bozmasın)
+                    current_time = time.time()
+                    self.track_history[id].append((current_time, cy))
                     
                     # Hız Hesapla
                     speed = self.calculate_speed(self.track_history[id])
@@ -207,14 +223,42 @@ class SpeedEngine:
                 rec['frames_left'] -= 1
                 if rec['frames_left'] <= 0:
                     rec['writer'].release()
+                    
+                    # Video kaydı tamamlandı, e-postayı gönder
+                    if 'email_info' in rec:
+                        info = rec['email_info']
+                        send_violation_email(
+                            cam_name=info['cam_name'],
+                            violation_type=info['violation_type'],
+                            vehicle_id=info['vehicle_id'],
+                            timestamp=info['timestamp'],
+                            image_path=info['image_path'],
+                            video_path=info['video_path'],
+                            crop_path=info.get('crop_path')
+                        )
+                        
                     self.active_writers.remove(rec)
 
             _, buffer = cv2.imencode('.jpg', preview)
             self.current_frame = buffer.tobytes()
             
+            # CPU yükünü dengele ve akışı sabitle
+            time.sleep(0.01)
+            
         self.cap.release()
         for rec in self.active_writers:
             rec['writer'].release()
+            if 'email_info' in rec:
+                info = rec['email_info']
+                send_violation_email(
+                    cam_name=info['cam_name'],
+                    violation_type=info['violation_type'],
+                    vehicle_id=info['vehicle_id'],
+                    timestamp=info['timestamp'],
+                    image_path=info['image_path'],
+                    video_path=info['video_path'],
+                    crop_path=info.get('crop_path')
+                )
 
     def get_frame(self):
         return self.current_frame

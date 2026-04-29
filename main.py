@@ -26,7 +26,7 @@ class WrongWayApp:
 
             # Run YOLO Tracking
             # classes=[2, 3, 5, 7] correspond to car, motorcycle, bus, truck in COCO
-            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], verbose=False)
+            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], tracker="botsort_custom.yaml", verbose=False)
 
             if results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)

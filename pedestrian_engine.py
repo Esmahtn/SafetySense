@@ -6,19 +6,22 @@ import sqlite3
 import os
 from collections import deque
 from ultralytics import YOLO
+from mailer import send_violation_email
+from async_camera import SmartCamera
 
 
 
 class PedestrianEngine:
-    def __init__(self, camera_id, camera_name, source):
+    def __init__(self, camera_id, camera_name, source, model=None):
         self.camera_id = camera_id
         self.camera_name = camera_name
         self.source = source
         
-        # YOLOv8 pose modeli (insan tespiti ve iskelet çıkarma)
-        # Standart YOLOv8 nesne tespiti (HAFİF MODEL - KASMA YAPMAZ)
-        print(f"[{self.camera_name}] YOLO standart model yukleniyor (Hafif)...")
-        self.model = YOLO("yolo11n.pt")
+        if model:
+            self.model = model
+        else:
+            print(f"[{self.camera_name}] YOLO Standart Model yükleniyor (Nano)...")
+            self.model = YOLO("yolo11n.pt")
         
         self.current_frame = None
         self.running = True
@@ -40,8 +43,9 @@ class PedestrianEngine:
         # State yönetimi
         self.person_in_roi_frames = {}  # ID -> ROI içinde geçirdiği frame sayısı
         self.pedestrian_logged = set()  # Zaten loglanan ID'ler
+        self.last_global_violation_time = 0 # ID değişse bile mükerrer kaydı önlemek için global cooldown
         self.last_violation_time = 0    # Spam önleme için cooldown
-        self.violation_cooldown_sec = 30 # Aynı kameradan 30 saniyede 1 mail
+        self.violation_cooldown_sec = 20 # Aynı kameradan 20 saniyede 1 kayıt (ID'den bağımsız)
         self.fps = 30
         
         # Video kayıt değişkenleri (avc1 - H264)
@@ -59,7 +63,11 @@ class PedestrianEngine:
     def log_violation(self, person_id, frame, box=None):
         # Spam Önleme: Son 30 saniyede aynı kameradan uyarı gittiyse sadece DB'ye yaz, mail/sse atma
         current_time = time.time()
-        is_spam = (current_time - self.last_violation_time) < self.violation_cooldown_sec
+        is_spam = (current_time - self.last_global_violation_time) < self.violation_cooldown_sec
+        if is_spam:
+            return
+        
+        self.last_global_violation_time = current_time
         
         timestamp_str = time.strftime("%Y%m%d_%H%M%S")
         rand_suffix = np.random.randint(1000, 9999)
@@ -98,11 +106,26 @@ class PedestrianEngine:
                 resized = cv2.resize(buf_frame, (w, h))
                 writer.write(resized)
             if not hasattr(self, 'active_writers'): self.active_writers = []
-            self.active_writers.append({'writer': writer, 'frames_left': int(self.fps * 5)})
+            
+            email_info = {
+                "cam_name": self.camera_name,
+                "violation_type": "Yaya İhlali",
+                "vehicle_id": person_id,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "image_path": img_path,
+                "video_path": vid_path,
+                "crop_path": crop_path
+            }
+            
+            self.active_writers.append({
+                'writer': writer, 
+                'frames_left': int(self.fps * 10), # İhlalden sonra 10 saniye kayıt
+                'email_info': email_info
+            })
         
         db_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         
-        conn = sqlite3.connect('violations.db')
+        conn = sqlite3.connect('violations.db', timeout=20)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path)
@@ -113,30 +136,24 @@ class PedestrianEngine:
         conn.close()
         
         print(f"[{self.camera_name}] YAYA IHLALI: ID {person_id} kaydedildi!")
-        
-        if not is_spam:
-            if self.on_violation:
-                self.on_violation({
-                    "id": violation_id,
-                    "camera_id": self.camera_id,
-                    "camera_name": self.camera_name,
-                    "vehicle_id": person_id,
-                    "type": "Yaya Ihlali",
-                    "image_path": img_path,
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "video_path": vid_path
-                })
-            self.last_violation_time = current_time
+
+        # E-posta gönderimi video kaydı tamamlanınca (active_writers içinde) tetiklenecek.
+
+        if self.on_violation:
+            self.on_violation({
+                "id": violation_id,
+                "camera_id": self.camera_id,
+                "camera_name": self.camera_name,
+                "vehicle_id": person_id,
+                "type": "Yaya Ihlali",
+                "image_path": img_path,
+                "timestamp": db_timestamp,
+                "video_path": vid_path
+            })
 
     def process(self):
-        cap = cv2.VideoCapture(self.source)
-        if not cap.isOpened():
-            print(f"[{self.camera_name}] HATA: Video/Kamera acilamadi: {self.source}")
-            return
-            
-        # Videoyu belirtilen süreden (Varsayılan 4:30) başlat
-        start_sec = getattr(self, 'cap_start_time', 270)
-        cap.set(cv2.CAP_PROP_POS_MSEC, start_sec * 1000)
+        cap = SmartCamera(self.source, simulate_live=True)
+        cap.start()
             
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -154,6 +171,7 @@ class PedestrianEngine:
         
         frame_count = 0
         
+        results = None
         while self.running:
             ret, frame = cap.read()
             if not ret:
@@ -164,25 +182,6 @@ class PedestrianEngine:
             
             # GÖRÜNTÜ GÜNCELLEME (Turbo): Analizden bağımsız olarak her kareyi ekrana bas
             display_frame = frame.copy()
-            # ROI bölgesini çiz (Şeffaf Sarı)
-            overlay = display_frame.copy()
-            cv2.fillPoly(overlay, [self.roi_polygon], (0, 255, 255))
-            cv2.addWeighted(overlay, 0.2, display_frame, 0.8, 0, display_frame)
-            cv2.polylines(display_frame, [self.roi_polygon], True, (0, 200, 200), 2)
-            
-            preview = cv2.resize(display_frame, (800, 450))
-            self.frame_buffer.append(preview)
-            _, buffer = cv2.imencode('.jpg', preview)
-            self.current_frame = buffer.tobytes()
-
-            # ANALİZ: Her 3 kareden sadece 1'inde yap
-            if frame_count % 2 != 0:
-                continue
-            
-            results = self.model.track(frame, persist=True, classes=[0], conf=0.15, imgsz=480, verbose=False)
-            
-            # Görselleştirme için kopya
-            display_frame = frame.copy()
             
             # ROI bölgesini çiz (Şeffaf Sarı)
             overlay = display_frame.copy()
@@ -191,8 +190,11 @@ class PedestrianEngine:
             cv2.polylines(display_frame, [self.roi_polygon], True, (0, 200, 200), 2)
             cv2.putText(display_frame, "YAYA YASAK ALAN", (self.roi_polygon[0][0], self.roi_polygon[0][1]-10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
+
+            # Hız ve Akıcılık Modu (320px)
+            results = self.model.track(frame, persist=True, classes=[0], conf=0.1, imgsz=320, tracker="botsort.yaml", verbose=False)
             
-            if results[0].boxes.id is not None:
+            if results is not None and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 track_ids = results[0].boxes.id.int().cpu().tolist()
                 
@@ -204,14 +206,14 @@ class PedestrianEngine:
                     w = x2 - x1
                     h = y2 - y1
                     aspect_ratio = w / (h + 1e-5)
-                    if aspect_ratio < 0.2 or aspect_ratio > 0.85:
+                    if aspect_ratio < 0.1 or aspect_ratio > 1.2:
                         continue  # Bu bir direk veya makine olabilir
                         
                     in_roi = False
                     
                     # Bounding Box'ın Alt-Orta Noktası (Kişinin ayaklarının bastığı yer)
-                    bottom_center = (int((x1 + x2) / 2), int(y2))
-                    cv2.circle(display_frame, bottom_center, 5, (255, 255, 0), -1) # Sarı nokta
+                    bottom_center = (float((x1 + x2) / 2), float(y2))
+                    cv2.circle(display_frame, (int(bottom_center[0]), int(bottom_center[1])), 5, (255, 255, 0), -1) # Sarı nokta
                     
                     if cv2.pointPolygonTest(self.roi_polygon, bottom_center, False) >= 0:
                         in_roi = True
@@ -220,8 +222,8 @@ class PedestrianEngine:
                     if in_roi:
                         self.person_in_roi_frames[track_id] = self.person_in_roi_frames.get(track_id, 0) + 1
                         
-                        # 5 frame üst üste bölgedeyse ihlal say
-                        if self.person_in_roi_frames[track_id] >= 5:
+                        # 2 frame üst üste bölgedeyse ihlal say (Hızlı Tepki)
+                        if self.person_in_roi_frames[track_id] >= 2:
                             if track_id not in self.pedestrian_logged:
                                 self.pedestrian_logged.add(track_id)
                                 self.log_violation(track_id, frame, box)
@@ -245,6 +247,9 @@ class PedestrianEngine:
             _, buffer = cv2.imencode('.jpg', preview)
             self.current_frame = buffer.tobytes()
             
+            # CPU yükünü dengele ve akışı sabitle
+            time.sleep(0.01)
+            
             # Geriye dönük video için tampona at
             self.frame_buffer.append(preview)
             
@@ -255,15 +260,39 @@ class PedestrianEngine:
                     rec['frames_left'] -= 1
                     if rec['frames_left'] <= 0:
                         rec['writer'].release()
+                        if 'email_info' in rec:
+                            info = rec['email_info']
+                            send_violation_email(
+                                cam_name=info['cam_name'],
+                                violation_type=info['violation_type'],
+                                vehicle_id=info['vehicle_id'],
+                                timestamp=info['timestamp'],
+                                image_path=info['image_path'],
+                                video_path=info['video_path'],
+                                crop_path=info.get('crop_path')
+                            )
                         self.active_writers.remove(rec)
             
-            # Sunucu modunda pencereyi kapat (Kilitlenmeyi önler)
-            # cv2.imshow(f"{self.camera_name} - Yaya Tespiti", preview)
-            # if cv2.waitKey(1) & 0xFF == ord('q'): break
+            # Sadece tekli test modunda pencereyi göster
+            if __name__ == "__main__":
+                cv2.imshow(f"{self.camera_name} - Yaya Tespiti", preview)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
             
         cap.release()
-        if self.current_writer is not None:
-            self.current_writer.release()
+        if hasattr(self, 'active_writers'):
+            for rec in self.active_writers:
+                rec['writer'].release()
+                if 'email_info' in rec:
+                    info = rec['email_info']
+                    send_violation_email(
+                        cam_name=info['cam_name'],
+                        violation_type=info['violation_type'],
+                        vehicle_id=info['vehicle_id'],
+                        timestamp=info['timestamp'],
+                        image_path=info['image_path'],
+                        video_path=info['video_path'],
+                        crop_path=info['crop_path']
+                    )
         cv2.destroyWindow(f"{self.camera_name} - Yaya Tespiti")
 
     def get_frame(self):
