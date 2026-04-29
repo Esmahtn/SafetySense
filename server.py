@@ -12,7 +12,6 @@ from queue import Queue
 from flask import Flask, Response, jsonify, send_from_directory, request
 from flask_cors import CORS
 from ultralytics import YOLO
-from huggingface_hub import hf_hub_download
 from pedestrian_engine import PedestrianEngine
 from mailer import send_violation_email
 from speed_engine import SpeedEngine
@@ -81,9 +80,8 @@ class CameraEngine:
         if model:
             self.model = model
         else:
-            print(f"[{self.name}] YOLO VisDrone Model yükleniyor...")
-            model_path = hf_hub_download(repo_id="mshamrai/yolov8n-visdrone", filename="best.pt")
-            self.model = YOLO(model_path)
+            print(f"[{self.name}] YOLO VisDrone Model yükleniyor (Tamamen Çevrimdışı)...")
+            self.model = YOLO("yolov8n-visdrone.pt")
         self.cap = SmartCamera(source, simulate_live=True)
         # Dakika 4.27'ye atla (267000 ms)
         self.cap.set(cv2.CAP_PROP_POS_MSEC, 267000)
@@ -325,7 +323,7 @@ def stats():
         vid = r['vehicle_id']
         if isinstance(vid, bytes):
             vid = int.from_bytes(vid, byteorder='little')
-        history.append({"id": r['id'], "vehicle_id": vid, "cam_name": r['cam_name'], "type": r['type'], "time": r['timestamp'], "img": r['image_path'], "crop": r['image_path'].replace("full", "crop"), "video": r['video_path']})
+        history.append({"id": r['id'], "vehicle_id": vid, "cam_name": r['cam_name'], "type": r['type'], "time": r['timestamp'], "img": r['image_path'], "crop": r['image_path'].replace("full", "crop"), "video": None})
     cursor.execute('SELECT COUNT(*) FROM violations'); total = cursor.fetchone()[0]
     conn.close()
     return jsonify({"total": total, "history": history})

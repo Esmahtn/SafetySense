@@ -6,7 +6,6 @@ import sqlite3
 import os
 from collections import deque
 from ultralytics import YOLO
-from huggingface_hub import hf_hub_download
 from mailer import send_violation_email
 from async_camera import SmartCamera
 
@@ -21,9 +20,8 @@ class PedestrianEngine:
         if model:
             self.model = model
         else:
-            print(f"[{self.camera_name}] YOLO VisDrone Model yükleniyor...")
-            model_path = hf_hub_download(repo_id="mshamrai/yolov8n-visdrone", filename="best.pt")
-            self.model = YOLO(model_path)
+            print(f"[{self.camera_name}] YOLO VisDrone Model yükleniyor (Tamamen Çevrimdışı)...")
+            self.model = YOLO("yolov8n-visdrone.pt")
         
         self.current_frame = None
         self.running = True
