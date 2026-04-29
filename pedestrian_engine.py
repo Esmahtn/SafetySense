@@ -6,6 +6,7 @@ import sqlite3
 import os
 from collections import deque
 from ultralytics import YOLO
+from huggingface_hub import hf_hub_download
 from mailer import send_violation_email
 from async_camera import SmartCamera
 
@@ -20,8 +21,9 @@ class PedestrianEngine:
         if model:
             self.model = model
         else:
-            print(f"[{self.camera_name}] YOLO Standart Model yükleniyor (Nano)...")
-            self.model = YOLO("yolo11n.pt")
+            print(f"[{self.camera_name}] YOLO VisDrone Model yükleniyor...")
+            model_path = hf_hub_download(repo_id="mshamrai/yolov8n-visdrone", filename="best.pt")
+            self.model = YOLO(model_path)
         
         self.current_frame = None
         self.running = True
@@ -153,6 +155,8 @@ class PedestrianEngine:
 
     def process(self):
         cap = SmartCamera(self.source, simulate_live=True)
+        # Dakika 4.27'ye atla (4*60+27 = 267 saniye = 267000 ms)
+        cap.set(cv2.CAP_PROP_POS_MSEC, 267000)
         cap.start()
             
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -192,7 +196,7 @@ class PedestrianEngine:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 2)
 
             # Hız ve Akıcılık Modu (320px)
-            results = self.model.track(frame, persist=True, classes=[0], conf=0.1, imgsz=320, tracker="botsort.yaml", verbose=False)
+            results = self.model.track(frame, persist=True, classes=[0, 1], conf=0.30, iou=0.45, max_det=1000, imgsz=320, tracker="botsort.yaml", verbose=False)
             
             if results is not None and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy()

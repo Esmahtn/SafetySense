@@ -12,6 +12,7 @@ from queue import Queue
 from flask import Flask, Response, jsonify, send_from_directory, request
 from flask_cors import CORS
 from ultralytics import YOLO
+from huggingface_hub import hf_hub_download
 from pedestrian_engine import PedestrianEngine
 from mailer import send_violation_email
 from speed_engine import SpeedEngine
@@ -77,8 +78,15 @@ class CameraEngine:
         self.cam_id = cam_id
         self.name = name
         self.source = source
-        self.model = model if model else YOLO("yolo11n.pt")
+        if model:
+            self.model = model
+        else:
+            print(f"[{self.name}] YOLO VisDrone Model yükleniyor...")
+            model_path = hf_hub_download(repo_id="mshamrai/yolov8n-visdrone", filename="best.pt")
+            self.model = YOLO(model_path)
         self.cap = SmartCamera(source, simulate_live=True)
+        # Dakika 4.27'ye atla (267000 ms)
+        self.cap.set(cv2.CAP_PROP_POS_MSEC, 267000)
         self.cap.start()
         self.current_frame = None
         self.fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -192,8 +200,8 @@ class CameraEngine:
             cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2)
 
             frame_counter += 1
-            # Stabilite ve Hız Modu (320px + 0.1 conf)
-            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.1, tracker="botsort.yaml", verbose=False)
+            # Stabilite ve Hız Modu (320px + 0.25 conf)
+            results = self.model.track(frame, persist=True, classes=[3, 4, 5, 8, 9], imgsz=320, conf=0.25, iou=0.45, max_det=1000, tracker="botsort.yaml", verbose=False)
             
             if results and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -286,25 +294,25 @@ class CameraEngine:
 # ÖRNEK: rtsp://kullanici:sifre@ip_adresi:port/yol
 # Kendi bilgilerinizle değiştirmek için aşağıdaki satırları kullanabilirsiniz:
 
-engine1 = CameraEngine(1, "Ana Koridor", "rtsp://admin:Sifre123@192.168.1.50:554/Streaming/Channels/101")
-engine2 = PedestrianEngine(2, "Güvensiz Bölge", "rtsp://admin:Sifre123@192.168.1.51:554/Streaming/Channels/101")
-engine3 = SpeedEngine(3, "Hız Koridoru", "rtsp://admin:Sifre123@192.168.1.52:554/Streaming/Channels/101")
+# engine1 = CameraEngine(1, "Ana Koridor", "rtsp://admin:Sifre123@192.168.1.50:554/Streaming/Channels/101")
+# engine2 = PedestrianEngine(2, "Güvensiz Bölge", "rtsp://admin:Sifre123@192.168.1.51:554/Streaming/Channels/101")
+# engine3 = SpeedEngine(3, "Hız Koridoru", "rtsp://admin:Sifre123@192.168.1.52:554/Streaming/Channels/101")
 
 # Not: Test için video dosyası kullanmak isterseniz eski satırlar aşağıdadır:
-# engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi")
-# engine2 = PedestrianEngine(2, "Güvensiz Bölge", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
-# engine3 = SpeedEngine(3, "Hız Koridoru", "video/192.168.12.5_ch50_20260422112304_20260422113058_hız.avi")
+# engine1 = CameraEngine(1, "Ana Koridor", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
+engine2 = PedestrianEngine(2, "Güvensiz Bölge", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
+# engine3 = SpeedEngine(3, "Hız Koridoru", "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi")
 
-cameras = {1: engine1, 2: engine2, 3: engine3}
+cameras = {2: engine2}
 
 def notify(data):
     msg = json.dumps(data)
     for q in sse_clients: q.put(msg)
     # E-posta gönderimi artık her engine'in kendi içindeki deferred logic'i (active_writers) ile yapılıyor.
 
-engine1.on_violation = notify
+# engine1.on_violation = notify
 engine2.on_violation = notify
-engine3.on_violation = notify
+# engine3.on_violation = notify
 
 @app.route('/stats')
 def stats():
@@ -314,7 +322,10 @@ def stats():
     rows = cursor.fetchall()
     history = []
     for r in rows:
-        history.append({"id": r['id'], "vehicle_id": r['vehicle_id'], "cam_name": r['cam_name'], "type": r['type'], "time": r['timestamp'], "img": r['image_path'], "crop": r['image_path'].replace("full", "crop"), "video": None})
+        vid = r['vehicle_id']
+        if isinstance(vid, bytes):
+            vid = int.from_bytes(vid, byteorder='little')
+        history.append({"id": r['id'], "vehicle_id": vid, "cam_name": r['cam_name'], "type": r['type'], "time": r['timestamp'], "img": r['image_path'], "crop": r['image_path'].replace("full", "crop"), "video": r['video_path']})
     cursor.execute('SELECT COUNT(*) FROM violations'); total = cursor.fetchone()[0]
     conn.close()
     return jsonify({"total": total, "history": history})

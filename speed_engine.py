@@ -6,6 +6,7 @@ import random
 from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
+from huggingface_hub import hf_hub_download
 from mailer import send_violation_email
 from async_camera import SmartCamera
 
@@ -17,8 +18,12 @@ class SpeedEngine:
         if model:
             self.model = model
         else:
-            self.model = YOLO("yolo11n.pt")
+            print(f"[{self.name}] YOLO VisDrone Model yükleniyor...")
+            model_path = hf_hub_download(repo_id="mshamrai/yolov8n-visdrone", filename="best.pt")
+            self.model = YOLO(model_path)
         self.cap = SmartCamera(source, simulate_live=True)
+        # Dakika 4.27'ye atla (267000 ms)
+        self.cap.set(cv2.CAP_PROP_POS_MSEC, 267000)
         self.cap.start()
         
         # Kamera FPS değerini al
@@ -139,7 +144,7 @@ class SpeedEngine:
         cursor.execute('''
             INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (vehicle_id, self.name, f"Hız İhlali ({speed:.1f} km/h)", db_timestamp, img_name, vid_name))
+        ''', (int(vehicle_id), self.name, f"Hız İhlali ({speed:.1f} km/h)", db_timestamp, img_name, vid_name))
         conn.commit()
         last_id = cursor.lastrowid
         conn.close()
@@ -177,7 +182,7 @@ class SpeedEngine:
             display_frame = frame.copy()
 
             # Hız ve Akıcılık Modu (320px)
-            results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.1, tracker="botsort.yaml", verbose=False)
+            results = self.model.track(frame, persist=True, classes=[3, 4, 5, 8, 9], imgsz=320, conf=0.25, iou=0.45, max_det=1000, tracker="botsort.yaml", verbose=False)
                 
             if results and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
