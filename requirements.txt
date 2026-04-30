@@ -1,6 +1,7 @@
 ultralytics
-huggingface_hub
 opencv-python
 flask
 flask-cors
 numpy
+scipy
+lapx

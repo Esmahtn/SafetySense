@@ -1,51 +1,46 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { ShieldAlert, Camera, Clock, BarChart3, RefreshCcw, Search, ChevronRight } from 'lucide-react';
+import { 
+  ShieldAlert, Camera, Trash2, Monitor, LayoutGrid, CheckCircle2, 
+  ArrowRightLeft, Zap, User, Search, RefreshCcw, Maximize2, Minimize2,
+  Calendar, Clock, Filter, Eye, X, Download, AlertTriangle, Trash, CheckSquare, Square
+} from 'lucide-react';
 
 const API_BASE = "http://localhost:5000";
 
 function App() {
   const [stats, setStats] = useState({ total: 0, history: [] });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
   const [newAlert, setNewAlert] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(""); // Tarih filtresi için state
-  const [activeTab, setActiveTab] = useState("ters_yon"); // Sekme yönetimi
-  const [selectedIds, setSelectedIds] = useState([]); // Çoklu silme için
   
-  // Modal detayları için state
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [showSS, setShowSS] = useState(false);
-  const [fullImage, setFullImage] = useState(null); // Full screen resim için
+  // Selection
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // Filters
+  const [activeCam, setActiveCam] = useState("all"); 
+  const [activeType, setActiveType] = useState("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+
+  const [selectedImage, setSelectedImage] = useState(null);
 
   const fetchStats = async () => {
     try {
       const res = await axios.get(`${API_BASE}/stats`);
       setStats(res.data);
-      setError(false);
     } catch (err) {
-      console.error("Veri çekilemedi:", err);
-      setError(true);
-    } finally {
-      setLoading(false);
+      console.error("Veri hatası:", err);
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Bu ihlali onaylayıp listeden silmek istediğinize emin misiniz?")) return;
-    try {
-      await axios.delete(`${API_BASE}/delete_violation/${id}`);
-      setSelectedItem(null);
-      fetchStats(); // Listeyi yenile
-    } catch (err) {
-      console.error("İhlal silinemedi:", err);
-      alert("Silme işlemi sırasında bir hata oluştu.");
-    }
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
   const handleBulkDelete = async () => {
-    if (!window.confirm(`${selectedIds.length} adet ihlali silmek istediğinize emin misiniz?`)) return;
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`${selectedIds.length} ADET KAYDI SİLMEK İSTEDİĞİNİZE EMİN MİSİNİZ?`)) return;
     try {
       await axios.post(`${API_BASE}/delete_multiple`, { ids: selectedIds });
       setSelectedIds([]);
@@ -55,369 +50,270 @@ function App() {
     }
   };
 
+  const handleDelete = async (id) => {
+    try {
+      await axios.delete(`${API_BASE}/delete_violation/${id}`);
+      fetchStats();
+    } catch (err) {
+      alert("Silme hatası.");
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm("TÜM İHLAL KAYITLARINI SİLMEK İSTEDİĞİNİZE EMİN MİSİNİZ?")) return;
+    try {
+      await axios.delete(`${API_BASE}/clear_all_violations`);
+      fetchStats();
+    } catch (err) {
+      alert("Toplu silme hatası.");
+    }
+  };
+
   useEffect(() => {
     fetchStats();
-    
-    // Server-Sent Events (SSE) Dinleyicisi
     const eventSource = new EventSource(`${API_BASE}/stream`);
-    
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      console.log("Yeni İhlal Bildirimi Geldi!", data);
-      
-      // Ekranda popup (toast) göstermek için state'i güncelle
       setNewAlert(data);
-      
-      // Veritabanından en güncel veriyi tekrar çek
       fetchStats();
-      
-      // Uyarıyı 5 saniye sonra gizle
-      setTimeout(() => setNewAlert(null), 5000);
+      setTimeout(() => setNewAlert(null), 8000);
     };
-
-    return () => {
-      eventSource.close();
-    };
+    return () => eventSource.close();
   }, []);
 
+  const filteredHistory = useMemo(() => {
+    return stats.history.filter(item => {
+      if (activeCam !== "all") {
+        const camId = activeCam === "1" ? "Ana Koridor" : activeCam === "2" ? "Güvensiz Bölge" : "Hız Koridoru";
+        if (!item.cam_name.includes(camId)) return false;
+      }
+      if (activeType !== "all") {
+        const typeSearch = activeType === 'yaya' ? 'yaya' : activeType === 'hız' ? 'hız' : 'ters';
+        if (!item.type.toLowerCase().includes(typeSearch)) return false;
+      }
+      if (filterDate && item.time.split(' ')[0] !== filterDate) return false;
+      if (searchTerm && !item.vehicle_id.toString().includes(searchTerm) && !item.type.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+      return true;
+    });
+  }, [stats.history, activeCam, activeType, searchTerm, filterDate]);
+
   return (
-    <div className="min-h-screen bg-[#0f1115] text-white p-4 md:p-8 font-sans">
-      {/* Header */}
-      <header className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4 border-b border-white/10 pb-6">
-        <div className="flex items-center gap-4">
-          <div className="bg-red-500 p-3 rounded-xl shadow-[0_0_20px_rgba(239,68,68,0.3)]">
-            <ShieldAlert size={32} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">FABRİKA GÜVENLİK SİSTEMİ</h1>
-            <p className="text-gray-400 text-sm flex items-center gap-2">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-              Canlı Takip Aktif
-            </p>
-          </div>
-        </div>
-
-        <div className="flex gap-4">
-          <div className="bg-[#1a1d23] border border-white/5 px-6 py-3 rounded-2xl flex items-center gap-4">
-            <BarChart3 className="text-red-400" />
-            <div>
-              <p className="text-xs text-gray-500 font-medium">TOPLAM İHLAL</p>
-              <p className="text-2xl font-bold text-red-500">{stats.total}</p>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Canlı Uyarı (Toast Notification) */}
+    <div className="min-h-screen bg-[#050507] text-white font-inter flex flex-col lg:flex-row overflow-hidden selection:bg-red-500/30">
+      
+      {/* Toast Alert */}
       {newAlert && (
-        <div className="fixed top-8 right-8 z-50 bg-red-600 border-l-4 border-white text-white p-4 rounded-lg shadow-2xl animate-bounce">
-          <div className="flex items-center gap-3">
-            <ShieldAlert size={28} />
+        <div className="fixed top-10 right-10 z-[200] animate-in fade-in slide-in-from-right duration-500">
+          <div className="glass border-red-500/50 p-8 rounded-[40px] flex items-center gap-6 glow-red shadow-[0_0_80px_rgba(239,68,68,0.5)] bg-black/80 backdrop-blur-3xl min-w-[400px]">
+            <div className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center animate-pulse shadow-2xl shadow-red-600/50">
+              <ShieldAlert size={40} className="text-white" />
+            </div>
             <div>
-              <h4 className="font-bold text-lg">YENİ İHLAL TESPİTİ!</h4>
-              <p className="text-sm opacity-90">{newAlert.cam_name} bölgesinde {newAlert.type} (Araç #{newAlert.id})</p>
+              <h4 className="font-outfit font-black text-red-500 text-3xl mb-1 italic tracking-tighter">YENİ İHLAL!</h4>
+              <p className="text-xl text-white font-black uppercase tracking-tight">{newAlert.type}</p>
+              <p className="text-xs text-gray-400 font-bold uppercase mt-1 opacity-60">{newAlert.cam_name}</p>
             </div>
           </div>
         </div>
       )}
 
-
-      {/* Ana İçerik */}
-      {error ? (
-        <div className="bg-red-500/10 border border-red-500/20 p-8 rounded-3xl text-center">
-          <RefreshCcw className="mx-auto mb-4 animate-spin text-red-500" />
-          <p className="text-lg font-medium">Backend Sunucusuna Bağlanılamıyor...</p>
-          <p className="text-gray-500 text-sm">server.py'ın çalıştığından emin olun.</p>
+      {/* Sidebar */}
+      <aside className="w-full lg:w-[380px] bg-[#0a0a0c] border-r border-white/5 p-8 flex flex-col space-y-6 z-30 overflow-y-auto custom-scrollbar">
+        <div className="flex items-center gap-4 mb-4">
+          <ShieldAlert size={32} className="text-red-600" />
+          <h1 className="text-2xl font-outfit font-black tracking-tighter italic">SafetySense</h1>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6">
-          {/* Sekme Menüsü (Tabs) */}
-          <div className="flex gap-4 mb-2 border-b border-white/10 pb-4">
-            <button 
-              onClick={() => setActiveTab('ters_yon')} 
-              className={`px-6 py-2 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'ters_yon' ? 'bg-red-600 text-white shadow-lg shadow-red-600/20' : 'bg-[#1a1d23] text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              🚗 Ters Yön Takibi
-            </button>
-            <button 
-              onClick={() => setActiveTab('yaya')} 
-              className={`px-6 py-2 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'yaya' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-[#1a1d23] text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              🚶 Yaya İhlal Takibi
-            </button>
-            <button 
-              onClick={() => setActiveTab('hiz')} 
-              className={`px-6 py-2 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'hiz' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'bg-[#1a1d23] text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
-              ⚡ Hız İhlal Takibi
-            </button>
+
+        <nav className="space-y-1.5">
+          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest mb-2 ml-2">KAMERA SEÇİMİ</p>
+          <SidebarBtn active={activeCam === 'all'} onClick={() => setActiveCam('all')} icon={<LayoutGrid size={16}/>} label="TÜM KAMERALAR" />
+          <SidebarBtn active={activeCam === '1'} onClick={() => setActiveCam('1')} icon={<ArrowRightLeft size={16}/>} label="ANA KORİDOR" />
+          <SidebarBtn active={activeCam === '2'} onClick={() => setActiveCam('2')} icon={<User size={16}/>} label="GÜVENSİZ BÖLGE" />
+          <SidebarBtn active={activeCam === '3'} onClick={() => setActiveCam('3')} icon={<Zap size={16}/>} label="HIZ KORİDORU" />
+        </nav>
+
+        <div className="space-y-1.5 pt-4 border-t border-white/5">
+          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest mb-2 ml-2">İHLAL TÜRÜ</p>
+          <div className="grid grid-cols-2 gap-2">
+            <TypeBtn active={activeType === 'all'} onClick={() => setActiveType('all')} label="TÜMÜ" />
+            <TypeBtn active={activeType === 'yaya'} onClick={() => setActiveType('yaya')} label="YAYA" />
+            <TypeBtn active={activeType === 'hız'} onClick={() => setActiveType('hız')} label="HIZ" />
+            <TypeBtn active={activeType === 'ters'} onClick={() => setActiveType('ters')} label="TERS YÖN" />
+          </div>
+        </div>
+
+        <div className="space-y-4 pt-4 border-t border-white/5">
+          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest ml-2">GELİŞMİŞ FİLTRE</p>
+          <input type="date" className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 px-4 text-sm text-gray-400" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} />
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
+            <input type="text" placeholder="Ara..." className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-10 pr-4 text-sm focus:border-red-500/50" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+          </div>
+          <button onClick={() => {setFilterDate(""); setSearchTerm(""); setActiveType("all"); setActiveCam("all"); setSelectedIds([]);}} className="w-full py-2 text-[10px] font-black text-gray-600 hover:text-red-500 flex items-center justify-center gap-2 transition-all"><RefreshCcw size={12}/> SIFIRLA</button>
+        </div>
+
+        <div className="mt-auto pt-4 border-t border-white/5">
+           <div className="bg-red-600/10 p-5 rounded-3xl border border-red-600/20 text-center">
+              <p className="text-3xl font-outfit font-black text-white">{stats.total}</p>
+              <p className="text-[9px] text-red-500 font-bold uppercase tracking-widest">GÜNLÜK TOPLAM</p>
+           </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-12 space-y-12 bg-[#050507]">
+        <section className="space-y-8 animate-fade-in">
+          <div className="flex justify-between items-center">
+            <h2 className="text-4xl font-outfit font-black flex items-center gap-5 italic uppercase tracking-tighter">
+              <Monitor className="text-red-600" size={36} />
+              {activeCam === "all" ? "CANLI GÖZETİM DUVARI" : "ODAKLANMIŞ AKIŞ"}
+            </h2>
           </div>
 
-          {/* Canlı Kamera Akışları */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
-            <div className="bg-[#1a1d23] border border-white/5 rounded-3xl overflow-hidden p-5 shadow-lg">
-              <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                {activeTab === 'ters_yon' ? 'Ana Koridor (Ters Yön) Canlı' : 
-                 activeTab === 'yaya' ? 'Güvensiz Bölge (Yaya) Canlı' : 'Hız Koridoru Canlı'}
-              </h2>
-              <div className="relative aspect-video bg-black rounded-2xl overflow-hidden border border-white/5">
-                {activeTab === 'ters_yon' && (
-                  <img src={`${API_BASE}/vehicle_stream`} className="w-full h-full object-contain" alt="Ters Yön Canlı" />
-                )}
-                {activeTab === 'yaya' && (
-                  <img src={`${API_BASE}/pedestrian_stream`} className="w-full h-full object-contain" alt="Yaya Tespiti Canlı" />
-                )}
-                {activeTab === 'hiz' && (
-                  <img src={`${API_BASE}/speed_stream`} className="w-full h-full object-contain" alt="Hız Takibi Canlı" />
-                )}
-              </div>
+          {activeCam === "all" ? (
+            <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-8">
+              <CamCard id={1} title="Ana Koridor" endpoint="vehicle_stream" />
+              <CamCard id={2} title="Güvensiz Bölge" endpoint="pedestrian_stream" />
+              <CamCard id={3} title="Hız Koridoru" endpoint="speed_stream" />
             </div>
-          </div>
-          
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-2 gap-4">
-            <div className="flex items-center gap-6">
-              <h2 className="text-xl font-bold flex items-center gap-3">
-                <Camera size={24} className={activeTab === 'ters_yon' ? 'text-red-400' : 'text-orange-400'} />
-                {activeTab === 'ters_yon' ? 'Ters Yön' : 'Yaya'} İhlal Listesi
-              </h2>
-              {selectedIds.length > 0 && (
-                <button 
-                  onClick={handleBulkDelete}
-                  className="bg-red-600/90 hover:bg-red-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 animate-pulse"
-                >
-                  <ShieldAlert size={14} />
-                  Seçilenleri Sil ({selectedIds.length})
-                </button>
-              )}
-            </div>
-            
-            <div className="flex items-center gap-4">
-              {/* Tarih Filtresi */}
-              <div className="flex items-center gap-2 bg-[#1a1d23] border border-white/10 px-4 py-2 rounded-xl">
-                <span className="text-sm text-gray-400">Tarih:</span>
-                <input 
-                  type="date" 
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="bg-transparent border-none outline-none text-sm text-white cursor-pointer"
-                />
-              </div>
-            </div>
+          ) : (
+            <BigCamView id={activeCam} title={activeCam === "1" ? "ANA KORİDOR" : activeCam === "2" ? "GÜVENSİZ BÖLGE" : "HIZ KORİDORU"} endpoint={activeCam === "1" ? "vehicle_stream" : activeCam === "2" ? "pedestrian_stream" : "speed_stream"} />
+          )}
+        </section>
+
+        <section className="space-y-10 pt-12 border-t border-white/5 pb-40">
+          <div className="flex justify-between items-end">
+             <h3 className="text-3xl font-outfit font-black text-red-500 flex items-center gap-4 italic uppercase tracking-tighter"><AlertTriangle size={32} /> İHLAL KAYITLARI</h3>
+             <div className="flex gap-4">
+                <button onClick={() => setSelectedIds(filteredHistory.map(x => x.id))} className="text-[10px] font-black text-white/50 hover:text-white uppercase tracking-widest">TÜMÜNÜ SEÇ</button>
+                <button onClick={handleClearAll} className="text-[10px] font-black text-red-500/50 hover:text-red-500 uppercase tracking-widest">ARŞİVİ BOŞALT</button>
+             </div>
           </div>
 
-          {stats.history.length === 0 ? (
-            <div className="bg-[#1a1d23] border border-white/5 p-12 rounded-3xl text-center text-gray-500">
-              <p>Şu ana kadar herhangi bir ihlal tespit edilmedi.</p>
-            </div>
-          ) : (() => {
-            // Sekme filtrelemesi
-            let tabFiltered = stats.history;
-            if (activeTab === 'ters_yon') {
-              tabFiltered = stats.history.filter(item => item.type.includes("Ters Yön"));
-            } else if (activeTab === 'yaya') {
-              tabFiltered = stats.history.filter(item => item.type.includes("Yaya"));
-            } else {
-              tabFiltered = stats.history.filter(item => item.type.includes("Hız"));
-            }
-
-            // Tarih filtrelemesi
-            const finalFiltered = selectedDate 
-              ? tabFiltered.filter(item => item.time.startsWith(selectedDate))
-              : tabFiltered;
-
-            if (finalFiltered.length === 0) {
+          <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-10">
+            {filteredHistory.map((item) => {
+              const isSelected = selectedIds.includes(item.id);
               return (
-                <div className="bg-[#1a1d23] border border-white/5 p-12 rounded-3xl text-center text-gray-500">
-                  <p>Bu sekmeye veya seçilen tarihe ait ihlal kaydı bulunmamaktadır.</p>
-                </div>
-              );
-            }
-
-            return (
-              <div className="flex flex-col gap-3">
-                {/* Liste Başlıkları */}
-                <div className="grid grid-cols-[50px_1fr_1fr_1fr_1fr_80px] px-6 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider">
-                  <div className="flex items-center">
-                    <input 
-                      type="checkbox" 
-                      onChange={(e) => {
-                        if (e.target.checked) setSelectedIds(finalFiltered.map(i => i.id));
-                        else setSelectedIds([]);
-                      }}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700"
-                    />
+                <div 
+                  key={item.id} 
+                  className={`bg-[#0a0a0c] rounded-[45px] p-8 border transition-all shadow-2xl relative group cursor-pointer ${isSelected ? 'border-red-600 ring-2 ring-red-600/50' : 'border-white/5 hover:border-red-600/40'}`}
+                  onClick={() => toggleSelect(item.id)}
+                >
+                  <div className="absolute top-6 right-6">
+                    {isSelected ? <CheckSquare className="text-red-600" size={24} /> : <Square className="text-white/10" size={24} />}
                   </div>
-                  <div>Zaman</div>
-                  <div>İhlal Türü</div>
-                  <div>ID</div>
-                  <div>Kamera</div>
-                  <div className="text-right">Detay</div>
-                </div>
 
-                {finalFiltered.map((item, idx) => (
-                  <div 
-                    key={idx}
-                    className={`grid grid-cols-[50px_1fr_1fr_1fr_1fr_80px] px-6 py-4 bg-[#1a1d23] border border-white/5 rounded-2xl hover:bg-white/5 transition-all items-center group cursor-pointer ${selectedIds.includes(item.id) ? 'border-red-500/50 bg-red-500/5' : ''}`}
-                    onClick={() => { setSelectedItem(item); setShowSS(false); }}
-                  >
+                  <div className="flex justify-between items-start mb-6 pr-10">
                     <div>
-                      <input 
-                        type="checkbox" 
-                        checked={selectedIds.includes(item.id)}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={() => {
-                          if (selectedIds.includes(item.id)) setSelectedIds(selectedIds.filter(i => i !== item.id));
-                          else setSelectedIds([...selectedIds, item.id]);
-                        }}
-                        className="w-4 h-4 rounded border-gray-600 bg-gray-700"
-                      />
+                      <span className="bg-red-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase italic tracking-tighter">{item.type}</span>
+                      <h4 className="text-2xl font-outfit font-black mt-4 text-gray-200">{item.cam_name}</h4>
+                      <p className="text-xs text-gray-600 font-black mt-1 uppercase tracking-widest">{item.time}</p>
                     </div>
-                    <div className="text-sm font-medium text-gray-300">{item.time.split(' ')[1]} <span className="text-[10px] opacity-40 ml-1">{item.time.split(' ')[0]}</span></div>
-                    <div>
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase ${item.type.includes("Yaya") ? "bg-orange-500/20 text-orange-400" : "bg-red-500/20 text-red-400"}`}>
-                        {item.type}
-                      </span>
-                    </div>
-                    <div className="font-mono text-xs text-gray-400">#{item.vehicle_id}</div>
-                    <div className="text-xs text-gray-500">{item.cam_name}</div>
-                    <div className="text-right">
-                      <ChevronRight className="inline-block text-gray-600 group-hover:text-white transition-colors" size={20} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* Modal / Büyütülmüş İnceleme Görünümü */}
-      {selectedItem && (
-        <div 
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md" 
-          onClick={() => setSelectedItem(null)}
-        >
-          <div 
-            className="bg-[#1a1d23] border border-white/10 rounded-3xl overflow-hidden max-w-5xl w-full shadow-[0_0_50px_rgba(239,68,68,0.15)]" 
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="flex justify-between items-center p-5 border-b border-white/5">
-              <h3 className="font-bold text-xl flex items-center gap-2">
-                <Camera className="text-red-500" />
-                {selectedItem.cam_name} - Detaylı İnceleme
-              </h3>
-              <button 
-                onClick={() => setSelectedItem(null)} 
-                className="text-gray-500 hover:text-white bg-white/5 hover:bg-white/10 w-8 h-8 rounded-full flex items-center justify-center transition-colors"
-              >
-                &times;
-              </button>
-            </div>
-            
-            {/* Modal Body */}
-            <div className="p-5">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Sol Taraf: Kanıt (Video veya SS) */}
-                <div className="lg:col-span-2 bg-black rounded-2xl overflow-hidden aspect-video relative group border border-white/10">
-                  {!showSS && selectedItem.video ? (
-                    <video 
-                      key={selectedItem.video}
-                      controls 
-                      autoPlay 
-                      className="w-full h-full object-contain"
-                    >
-                      <source src={`${API_BASE}/videos/${selectedItem.video}`} type="video/mp4" />
-                      Tarayıcınız video oynatmayı desteklemiyor.
-                    </video>
-                  ) : (
-                    <img 
-                      src={`${API_BASE}/screenshots/${selectedItem.img}`} 
-                      className="w-full h-full object-contain cursor-zoom-in" 
-                      alt="İhlal Kanıtı" 
-                      onClick={() => setFullImage(`${API_BASE}/screenshots/${selectedItem.img}`)}
-                    />
-                  )}
-                </div>
-                
-                {/* Sağ Taraf: Detaylar ve ZOOM (CROP) */}
-                <div className="flex flex-col gap-6">
-                  <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
-                    <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-2">
-                      <Search size={14} /> Yakınlaştırılmış Görüntü
-                    </h4>
-                    <div className="aspect-square bg-black rounded-xl overflow-hidden border border-white/10 shadow-inner group relative">
-                      <img 
-                        src={`${API_BASE}/screenshots/crop_${selectedItem.img}`} 
-                        className="w-full h-full object-cover cursor-zoom-in group-hover:scale-105 transition-transform" 
-                        alt="Zoom"
-                        onClick={() => setFullImage(`${API_BASE}/screenshots/crop_${selectedItem.img}`)}
-                        onError={(e) => { e.target.src = `${API_BASE}/screenshots/${selectedItem.img}`; }}
-                      />
-                    </div>
-                    <p className="text-[10px] text-gray-500 mt-2 text-center">Otomatik nesne odaklı yakınlaştırma</p>
                   </div>
 
-                  <div className="bg-white/5 p-6 rounded-2xl border border-white/5 flex-1">
-                    <p className="text-gray-500 text-[10px] uppercase font-bold mb-4 tracking-widest">İhlal Detayları</p>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-gray-400 text-xs mb-1">Kamera / Bölge</p>
-                        <p className="font-bold text-lg">{selectedItem.cam_name}</p>
+                  <div className="grid grid-cols-2 gap-4" onClick={e => e.stopPropagation()}>
+                    <div className="space-y-2">
+                      <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">GENEL</p>
+                      <div className="aspect-video bg-black rounded-3xl overflow-hidden border border-white/5 cursor-zoom-in" onClick={() => setSelectedImage(`${API_BASE}/screenshots/${item.img}`)}>
+                         <img src={`${API_BASE}/screenshots/${item.img}`} className="w-full h-full object-cover" />
                       </div>
-                      <div>
-                        <p className="text-gray-400 text-xs mb-1">Tarih & Zaman</p>
-                        <p className="font-medium">{selectedItem.time}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 text-xs mb-1">Takip ID</p>
-                        <p className="text-2xl font-mono font-black text-red-500">#{selectedItem.vehicle_id}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">ZOOM</p>
+                      <div className="aspect-video bg-black rounded-3xl overflow-hidden border border-white/5 cursor-zoom-in" onClick={() => setSelectedImage(`${API_BASE}/screenshots/crop_${item.img}`)}>
+                         <img src={`${API_BASE}/screenshots/crop_${item.img}`} className="w-full h-full object-cover" />
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
-                
-              <div className="flex flex-col sm:flex-row justify-end items-center gap-4 mt-6">
-                <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-                  {selectedItem.video && (
-                    <button 
-                      onClick={() => setShowSS(!showSS)}
-                      className="bg-gray-800 hover:bg-gray-700 text-white px-6 py-3 rounded-xl text-sm font-bold transition-all flex items-center gap-2 justify-center border border-white/10"
-                    >
-                      <Camera size={18} />
-                      {showSS ? "Videoya Dön" : "Net SS Gör"}
-                    </button>
-                  )}
+
                   <button 
-                    onClick={() => handleDelete(selectedItem.id)}
-                    className="bg-green-600 hover:bg-green-500 text-white px-6 py-3 rounded-xl text-sm font-bold transition-all transform hover:scale-105 shadow-[0_0_15px_rgba(34,197,94,0.3)] flex items-center gap-2 justify-center"
+                    onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }} 
+                    className="w-full mt-6 bg-green-600/10 hover:bg-red-600 hover:text-white py-3.5 rounded-3xl font-black text-xs border border-green-600/20 uppercase tracking-widest transition-all"
                   >
-                    <ShieldAlert size={18} />
-                    Onayla ve Listeden Sil
+                    KAYDI SİL
                   </button>
                 </div>
-              </div>
-            </div>
+              );
+            })}
           </div>
+        </section>
+      </main>
+
+      {/* BULK ACTION BAR */}
+      {selectedIds.length > 0 && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-bottom duration-500">
+           <div className="glass border-red-600/50 p-6 rounded-[35px] flex items-center gap-10 shadow-[0_0_100px_rgba(239,68,68,0.3)] bg-black/90 backdrop-blur-3xl border-2">
+              <div className="flex items-center gap-4">
+                 <div className="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center font-black text-xl shadow-lg shadow-red-600/40">
+                   {selectedIds.length}
+                 </div>
+                 <div>
+                    <p className="font-black text-sm uppercase tracking-tighter">KAYIT SEÇİLDİ</p>
+                    <p className="text-[10px] text-gray-500 font-bold uppercase">TOPLU İŞLEM MERKEZİ</p>
+                 </div>
+              </div>
+              <div className="flex gap-4">
+                 <button onClick={() => setSelectedIds([])} className="px-8 py-3.5 rounded-2xl bg-white/5 hover:bg-white/10 font-black text-xs transition-all uppercase">VAZGEÇ</button>
+                 <button onClick={handleBulkDelete} className="px-10 py-3.5 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-black text-xs shadow-xl transition-all flex items-center gap-3 uppercase">
+                   <Trash2 size={16} /> SEÇİLENLERİ SİL
+                 </button>
+              </div>
+           </div>
         </div>
       )}
 
-      {/* Footer */}
-      <footer className="mt-12 text-center text-gray-600 text-xs py-8 border-t border-white/5">
-        &copy; 2026 Fabrika Güvenlik ve İSG İzleme Sistemi v1.0.0
-      </footer>
-      {/* Full Screen Image Overlay */}
-      {fullImage && (
-        <div 
-          className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-4 md:p-10 cursor-zoom-out"
-          onClick={() => setFullImage(null)}
-        >
-          <img src={fullImage} className="max-w-full max-h-full object-contain shadow-2xl" alt="Full" />
-          <button className="absolute top-10 right-10 text-white bg-white/10 p-4 rounded-full hover:bg-white/20 transition-all">&times;</button>
+      {/* Detail Modal */}
+      {selectedImage && (
+        <div className="fixed inset-0 z-[200] bg-black/98 backdrop-blur-3xl flex flex-col p-4 md:p-8 animate-in fade-in duration-300" onClick={() => setSelectedImage(null)}>
+           <div className="flex justify-between items-center text-white mb-6">
+              <div className="flex items-center gap-4">
+                <ShieldAlert className="text-red-600" size={32} />
+                <h3 className="text-2xl font-outfit font-black italic uppercase tracking-widest">DETAYLI GÖRÜNTÜ</h3>
+              </div>
+              <button onClick={() => setSelectedImage(null)} className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center hover:bg-red-500 transition-all"><X size={36} /></button>
+           </div>
+           <div className="flex-1 w-full relative flex items-center justify-center overflow-hidden rounded-[50px] border border-white/10 bg-[#020203]" onClick={e => e.stopPropagation()}>
+              <img src={selectedImage} className="max-w-full max-h-full object-contain" />
+           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Sub-components
+function SidebarBtn({ active, onClick, icon, label }) {
+  return (
+    <button onClick={onClick} className={`w-full flex items-center gap-4 px-5 py-4 rounded-3xl transition-all font-black text-xs ${active ? 'bg-red-600 text-white shadow-xl shadow-red-600/30 translate-x-2' : 'text-gray-600 hover:bg-white/5 hover:text-white'}`}>
+      {icon} {label}
+    </button>
+  );
+}
+
+function TypeBtn({ active, onClick, label }) {
+  return (
+    <button onClick={onClick} className={`py-2.5 rounded-2xl text-[10px] font-black transition-all border ${active ? 'bg-red-600 border-red-600 text-white shadow-lg shadow-red-600/20' : 'bg-white/5 border-white/10 text-gray-500 hover:text-white hover:border-white/20'}`}>
+      {label}
+    </button>
+  );
+}
+
+function CamCard({ id, title, endpoint }) {
+  return (
+    <div className="bg-[#0a0a0c] rounded-[45px] overflow-hidden border border-white/5 shadow-2xl hover:border-red-600/30 transition-all">
+      <div className="p-6 border-b border-white/5 bg-white/[0.02] flex justify-between items-center">
+        <h4 className="text-xs font-black flex items-center gap-3 italic"><span className="w-2 h-2 bg-red-600 rounded-full animate-pulse shadow-lg shadow-red-600/50"></span>{title.toUpperCase()}</h4>
+        <span className="text-[10px] font-black text-gray-700 tracking-widest">CAM-0{id}</span>
+      </div>
+      <div className="aspect-video bg-black"><img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain" /></div>
+    </div>
+  );
+}
+
+function BigCamView({ id, title, endpoint }) {
+  return (
+    <div className="bg-[#0a0a0c] rounded-[60px] overflow-hidden border border-white/5 shadow-2xl">
+      <div className="p-10 border-b border-white/5 bg-white/[0.02] flex justify-between items-center"><h4 className="text-4xl font-outfit font-black tracking-tighter italic uppercase">{title}</h4></div>
+      <div className="aspect-video bg-black"><img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain" /></div>
     </div>
   );
 }
