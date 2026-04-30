@@ -1,56 +1,34 @@
-# 🛡️ SafetySense: AI-Powered Factory Safety Monitoring
+# 🛡️ Fabrika İş Güvenliği İzleme Sistemi (AI Safety)
 
-SafetySense, endüstriyel tesislerde iş güvenliğini artırmak için geliştirilmiş, gerçek zamanlı nesne tespiti ve ihlal analizi yapan yapay zeka tabanlı bir izleme sistemidir. YOLOv11 mimarisi kullanılarak optimize edilen sistem, kritik bölgelerdeki insan ve araç hareketlerini anlık olarak denetler.
+Bu proje, fabrikalardaki güvenlik kameralarını "akıllı" hale getiren bir yapay zeka sistemidir. Basitçe anlatmak gerekirse; kameraları 7/24 izleyen yapay zeka tabanlı bir dijital göz gibi çalışır ve tehlikeli bir durum gördüğünde anında uyarı verir.
 
-![SafetySense Dashboard](https://img.shields.io/badge/Status-Stable-success?style=for-the-badge)
-![Python](https://img.shields.io/badge/Python-3.14%2B-blue?style=for-the-badge&logo=python)
-![YOLOv11](https://img.shields.io/badge/AI-YOLOv11--Large-red?style=for-the-badge)
+## 🤔 Bu Sistem Ne İşe Yarar?
 
-## 🚀 Öne Çıkan Özellikler
+Fabrika ortamında her an her şey olabilir. Bu yazılım şu 3 ana tehlikeyi otomatik olarak takip eder:
 
-- **Ters Yön Algılama:** Belirlenen koridorlarda araçların sürüş yönünü kontrol eder, hatalı yönelimleri saniyeler içinde tespit eder.
-- **Güvenli Bölge İhlali (Pedestrian ROI):** Yasaklı alanlara giren yayaları anlık olarak yakalar ve kırmızı kutularla işaretler.
-- **Hız Koridoru Analizi:** Araçların fabrika içi hız sınırlarını aşma durumlarını (km/h) ölçer ve kaydeder.
-- **Asenkron Mimari:** Kamera bağlantıları ve model yükleme işlemleri arka planda gerçekleşir; dashboard anında açılır, sistem asla donmaz.
-- **Otomatik Bildirim Sistemi:** İhlal anında 10 saniyelik video kaydı oluşturur, ekran görüntüsü alır ve ilgili birimlere otomatik e-posta gönderir.
-- **Modern Dashboard:** React ve Vite ile geliştirilmiş, canlı yayın akışını ve ihlal geçmişini gösteren kullanıcı dostu arayüz.
+1.  **Yanlış Yöne Giden Araçlar:** Forklift veya kamyonlar girmemesi gereken bir yöne giderse sistem bunu anında fark eder.
+2.  **Yasaklı Bölgeye Giren İnsanlar:** İşçilerin girmesinin tehlikeli olduğu (makine parkurları vb.) alanlara birisi girdiğinde sistem kırmızı kutuyla o kişiyi işaretler ve alarm verir.
+3.  **Hız İhlali:** Fabrika içinde hız sınırını aşan araçları tespit eder.
 
-## 🛠️ Teknik Altyapı
+## 🌟 Neden Bu Sistemi Kullanmalıyız?
 
-- **Görüntü İşleme:** OpenCV, Ultralytics YOLOv11 (Large)
-- **Backend:** Flask, Python Threading
-- **Frontend:** React, Vite, Tailwind CSS (Dashboard)
-- **Veritabanı:** SQLite (İhlal kayıtları ve istatistikler için)
-- **Kamera Yönetimi:** Asenkron RTSP akış yönetimi ve otomatik yeniden bağlanma desteği.
+-   **Yorulmaz:** İnsan gözü bir süre sonra ekrana bakarken yorulur ama bu yapay zeka asla uyumaz, dikkati dağılmaz.
+-   **Anında Kanıt Sunar:** Bir ihlal olduğunda o anın 10 saniyelik videosunu ve fotoğrafını çeker, e-posta ile yöneticiye gönderir.
+-   **Görünmez Kazaları Önler:** İnsanların ve araçların birbirine çok yakın olduğu kör noktaları denetler.
 
-## 📦 Kurulum ve Çalıştırma
+## 🚀 Nasıl Çalıştırılır?
 
-### 1. Gereksinimler
-Sistem Python 3.14+ ve Node.js gerektirir. Gerekli kütüphaneleri kurmak için:
+Hiç bilmeyen biri için kurulum adımları:
 
-```bash
-pip install -r requirements.txt
-```
+1.  Bilgisayarınıza gerekli kütüphaneleri kurun: `pip install -r requirements.txt`
+2.  Sistemi başlatmak için ana klasördeki `baslat.bat` dosyasına çift tıklayın.
+3.  Karşınıza çıkan panel üzerinden kameraları canlı olarak izlemeye başlayın.
 
-### 2. Canlı Yayını Başlatma
-Sistemi tek tıkla ayağa kaldırmak için `baslat.bat` dosyasını kullanabilir veya manuel olarak şu komutları çalıştırabilirsiniz:
+## 🛠️ Teknik Detaylar (Meraklısına)
 
-```bash
-# Backend ve Analiz Motoru
-python server.py
-
-# Frontend Dashboard (Dashboard klasörü içinde)
-npm run dev
-```
-
-## 🎥 Görselleştirme ve Analiz
-Sistem her kamera için özel **ROI (Region of Interest)** bölgelerini destekler:
-- **Mavi/Sarı Alan:** Araçların trafik kurallarını denetler.
-- **Mor/Kırmızı Alan:** Yayaların girmemesi gereken tehlikeli bölgeleri denetler.
-- **Maskeleme (Blind Spots):** Yanlış alarmları önlemek için kullanıcı tarafından fare ile seçilen bölgeleri tamamen kapatma özelliği.
-
-## 📜 Lisans
-Bu proje endüstriyel güvenlik standartlarına uygun olarak **SafetySense** ekibi tarafından geliştirilmiştir.
+-   **Göz (Yapay Zeka):** YOLOv11 mimarisi kullanıldı (Nesneleri tanıyan beyin).
+-   **Hız:** Saniyede onlarca kareyi analiz edebilen yüksek performanslı bir yapı.
+-   **Kayıt:** Tüm ihlaller bir veritabanında saklanır ve panel üzerinden geçmişe dönük izlenebilir.
 
 ---
-*SafetySense - Fabrikalar Artık Daha Güvenli.*
+*Bu proje, fabrikalarda iş kazalarını sıfıra indirmek ve daha güvenli bir çalışma ortamı oluşturmak amacıyla geliştirilmiştir.*
