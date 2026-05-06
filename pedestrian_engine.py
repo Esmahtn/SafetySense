@@ -4,6 +4,7 @@ import numpy as np
 import time
 import sqlite3
 import os
+from datetime import datetime
 from threading import Lock
 from collections import deque
 from ultralytics import YOLO
@@ -21,8 +22,8 @@ class PedestrianEngine:
         
         # ⭐ Mekansal Soğuma (Alarm Ledger)
         self.alarm_ledger = []
-        self.spatial_threshold = 100 # piksel
-        self.temporal_threshold = 10 # saniye (yayalar daha yavaş hareket eder)
+        self.spatial_threshold = 150 # piksel
+        self.temporal_threshold = 15 # saniye (yayalar daha yavaş hareket eder)
         
         self.running = True
         self.current_frame = None
@@ -46,18 +47,19 @@ class PedestrianEngine:
                 print(f"[YAYA] Maske yüklenirken hata: {e}")
         
         # ID bazlı + kameralar arası cooldown (server.py inject eder)
-        self.violation_cooldown_sec = 15
+        self.violation_cooldown_sec = 300 # ⭐ 5 dakika ID bazlı soğuma
         self.shared_violation_log = {}   # Varsayılan boş — server.py inject eder
         self.shared_violation_lock = Lock()  # Varsayılan lock — server.py inject eder
         
         # ⭐ Konum bazlı cooldown
         self._recent_violation_positions = []  # [(cx, cy, timestamp)]
-        self.position_cooldown_radius = 120    # ⭐ 120 piksel
-        self.position_cooldown_sec = 15         # ⭐ 15 saniye (Konum bazlı)
+        self.position_cooldown_radius = 150    # ⭐ 150 piksel
+        self.position_cooldown_sec = 10         # ⭐ 10 saniye (Konum bazlı)
         
         # Bellek temizliği
         self._last_cleanup = time.time()
         self._cleanup_interval = 60  # saniye
+        self.DB_PATH = "violations.db"
         
         self.on_violation = None
 
@@ -102,12 +104,14 @@ class PedestrianEngine:
             cy = int(box[3])  # Ayak noktası
             if self._is_position_in_cooldown(cx, cy):
                 return
-        # 2. Thread-safe ID bazlı kontrol
+        v_cat = "Yaya İhlali"
+        # 2. Thread-safe ID + Kategori bazlı kontrol
         with self.shared_violation_lock:
-            last_time = self.shared_violation_log.get(person_id, 0)
+            key = f"{person_id}_{v_cat}"
+            last_time = self.shared_violation_log.get(key, 0)
             if (current_time - last_time) < self.violation_cooldown_sec:
                 return
-            self.shared_violation_log[person_id] = current_time
+            self.shared_violation_log[key] = current_time
         # ⭐ Konum kaydını yap
         if box is not None:
             self._register_violation_position(cx, cy)
@@ -133,11 +137,17 @@ class PedestrianEngine:
         cv2.putText(evidence, f"TARIH: {ts_str} | ID: {person_id}", (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.imwrite(img_path, evidence)
         
-        # 4️⃣ E-posta bildirimi (arka planda)
+        # 4️⃣ Veritabanına kaydet
+        conn = sqlite3.connect(self.DB_PATH, timeout=20); cursor = conn.cursor()
+        cursor.execute('INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path) VALUES (?, ?, ?, ?, ?, ?)',
+                       (int(person_id), self.camera_name, "Yaya İhlali", ts_str, img_name, ""))
+        conn.commit(); last_id = cursor.lastrowid; conn.close()
+
+        # 5️⃣ E-posta bildirimi (arka planda)
         send_violation_email(self.camera_name, "Yaya İhlali", int(person_id), ts_str, img_path, crop_path=crop_path)
         
         if self.on_violation:
-            self.on_violation({"id": int(person_id), "cam_name": self.camera_name, "type": "Yaya İhlali", "time": ts_str, "img": img_name})
+            self.on_violation({"id": int(person_id), "db_id": last_id, "cam_name": self.camera_name, "type": "Yaya İhlali", "time": ts_str, "img": img_name})
 
     def _cleanup_stale_ids(self, active_ids):
         """5️⃣ Artık görünmeyen kişilerin frame sayacını temizler."""
@@ -182,7 +192,7 @@ class PedestrianEngine:
                 cv2.polylines(display_frame, [self.roi_polygon], True, (0, 255, 255), 2)
                 
                 self.frame_count += 1
-                if self.model: # ⭐ Her frame analiz edilecek
+                if self.model: 
                     results = self.model.track(frame, persist=True, classes=[0], conf=0.35, imgsz=640, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
@@ -205,7 +215,7 @@ class PedestrianEngine:
                             self.violation_buffer[track_id].append(is_in_roi)
                             if len(self.violation_buffer[track_id]) > 8: self.violation_buffer[track_id].pop(0)
                             
-                            # Onay: Son 5 karenin 3'ünde bölgede olması şart (Daha hızlı tepki)
+                            # Onay: Son 8 karenin 3'ünde bölgede olması şart
                             roi_confirmed = sum(self.violation_buffer[track_id]) >= 3
                             
                             if is_in_roi and roi_confirmed:

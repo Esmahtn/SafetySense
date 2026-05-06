@@ -50,7 +50,7 @@ class CameraEngine:
         self.model = None; self.model_name = "yolo11s.pt"
         self.ref_width, self.ref_height = 1920, 1080
         self.roi_scaled = False; self.middle_y = None
-        self.prev_positions = {}; self.start_points = {}
+        self.prev_positions = {}
         self.frame_count = 0
         
         # ⭐ Histerezis ve Karar Birikimi (M-out-of-N)
@@ -58,14 +58,14 @@ class CameraEngine:
         
         # ⭐ Mekansal Soğuma (Alarm Ledger) - Global veya Sınıf bazlı
         self.alarm_ledger = [] # [(timestamp, cx, cy, type), ...]
-        self.spatial_threshold = 120 # piksel (aynı bölge sayılması için mesafe)
-        self.temporal_threshold = 7 # saniye (aynı bölgede alarm basmama süresi)
+        self.spatial_threshold = 150 # piksel (aynı bölge sayılması için mesafe)
+        self.temporal_threshold = 15 # saniye (aynı bölgede alarm basmama süresi)
         
         self.shared_violation_log = {}; self.shared_violation_lock = threading.Lock()
-        self.violation_cooldown_sec = 30
+        self.violation_cooldown_sec = 300 # ⭐ 5 Dakika soğuma
         self._recent_violation_positions = [] # (cx, cy, timestamp)
-        self.position_cooldown_radius = 120    # ⭐ 120 piksel (Geri döndük)
-        self.position_cooldown_sec = 15         # ⭐ 15 saniye (Konum bazlı)
+        self.position_cooldown_radius = 150    # ⭐ 150 piksel (Geri döndük)
+        self.position_cooldown_sec = 10         # ⭐ 10 saniye (Konum bazlı)
         # Bellek temizliği
         self._last_cleanup = time.time()
         self._cleanup_interval = 60
@@ -90,11 +90,13 @@ class CameraEngine:
     def _is_spatial_duplicate(self, cx, cy, v_type):
         """⭐ Mekansal Soğuma: Aynı bölgede yakın zamanda alarm verildi mi?"""
         now = time.time()
-        # Eski kayıtları temizle (10 saniyeden eski olanlar)
+        # Eski kayıtları temizle (30 saniyeden eski olanlar)
         self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
         
+        v_cat = v_type.split('(')[0].strip()
         for ts, ax, ay, atype in self.alarm_ledger:
-            if atype == v_type:
+            a_cat = atype.split('(')[0].strip()
+            if a_cat == v_cat:
                 dist = ((cx - ax)**2 + (cy - ay)**2)**0.5
                 if dist < self.spatial_threshold and (now - ts) < self.temporal_threshold:
                     return True
@@ -110,12 +112,14 @@ class CameraEngine:
             if self._is_spatial_duplicate(cx, cy, violation_type):
                 return
                 
-        # 2. Thread-safe ID bazlı kontrol
+        v_cat = violation_type.split('(')[0].strip()
+        # 2. Thread-safe ID + Kategori bazlı kontrol
         with self.shared_violation_lock:
-            last_time = self.shared_violation_log.get(vehicle_id, 0)
+            key = f"{vehicle_id}_{v_cat}"
+            last_time = self.shared_violation_log.get(key, 0)
             if (current_time - last_time) < self.violation_cooldown_sec:
                 return
-            self.shared_violation_log[vehicle_id] = current_time
+            self.shared_violation_log[key] = current_time
             
         # ⭐ Ledger'a kaydet
         if box is not None:
@@ -150,13 +154,13 @@ class CameraEngine:
                 if not self.roi_scaled:
                     sx, sy = w / self.ref_width, h / self.ref_height
                     self.roi_polygon = np.array([(int(px*sx), int(py*sy)) for px, py in self.roi_polygon], dtype=np.int32); self.roi_scaled = True
-                if self.middle_y is None: self.middle_y = int(h * 0.6)
+                if self.middle_y is None: self.middle_y = int(h * 0.5)
                 
                 display_frame = frame.copy()
                 cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
                 
                 self.frame_count += 1
-                if self.model: # ⭐ Her frame analiz edilecek
+                if self.model: 
                     results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
@@ -173,28 +177,24 @@ class CameraEngine:
                             self.violation_buffer[id].append(is_in_roi)
                             if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
                             
-                            # Son 5 karenin en az 3'ünde ROI içindeyse "İhlal Durumu" onaylanır (Daha hızlı tepki)
+                            # Son 8 karenin en az 3'ünde ROI içindeyse "İhlal Durumu" onaylanır
                             roi_confirmed = sum(self.violation_buffer[id]) >= 3
                             
                             if not is_in_roi: 
                                 self.prev_positions.pop(id, None); continue
                                 
-                            if id not in self.start_points: self.start_points[id] = (cx, cy)
-                            if id not in self.prev_positions: self.prev_positions[id] = cy; continue
-                            
-                            p_y, (s_x, s_y) = self.prev_positions[id], self.start_points[id]
-                            dy, dx = s_y - cy, abs(s_x - cx)
-                            
-                            # 3️⃣ İhlal Kararı (Histerezis Onayı ile)
-                            if roi_confirmed and dy > (dx * 1.5) and ((p_y > self.middle_y and cy <= self.middle_y) or (cy < self.middle_y and dy > 15)): 
-                                self.log_violation(id, frame, box)
+                            # 3️⃣ İhlal Kararı (Hız Koridoru ile aynı kararlı yapı)
+                            if id in self.prev_positions and roi_confirmed:
+                                p_y = self.prev_positions[id]
+                                # Ters Yön: Aşağıdan Yukarı (Y değeri azalıyor)
+                                if p_y > self.middle_y and cy <= self.middle_y:
+                                    self.log_violation(id, frame, box)
                                 
                             self.prev_positions[id] = cy
                             # Çizim (ID ve Durum)
                             label = f"ID: {id}"
                             if roi_confirmed:
-                                label += " (IHLAL)"
-                                color = (0, 0, 255) # Kırmızı
+                                color = (0, 0, 255) # Kırmızı (Bölgede onaylandı)
                             else:
                                 color = (0, 255, 0) # Yeşil
                                 

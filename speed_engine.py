@@ -25,8 +25,8 @@ class SpeedEngine:
         
         # ⭐ Mekansal Soğuma (Alarm Ledger)
         self.alarm_ledger = []
-        self.spatial_threshold = 120 # piksel
-        self.temporal_threshold = 7 # saniye
+        self.spatial_threshold = 150 # piksel
+        self.temporal_threshold = 15 # saniye
         
         self.running = True
         self.current_frame = None
@@ -35,7 +35,7 @@ class SpeedEngine:
         self.track_history, self.entry_times, self.prev_positions = {}, {}, {}
         
         # ID bazlı + kameralar arası cooldown (server.py inject eder)
-        self.violation_cooldown_sec = 15
+        self.violation_cooldown_sec = 300  # ⭐ Aynı ID 5 dakika boyunca tekrar loglanmaz
         self.shared_violation_log = {}   # Varsayılan boş — server.py inject eder
         self.shared_violation_lock = Lock()  # Varsayılan lock — server.py inject eder
         
@@ -45,8 +45,8 @@ class SpeedEngine:
         
         # ⭐ Konum bazlı cooldown
         self._recent_violation_positions = []  # [(cx, cy, timestamp)]
-        self.position_cooldown_radius = 120    # ⭐ 120 piksel
-        self.position_cooldown_sec = 15         # ⭐ 15 saniye
+        self.position_cooldown_radius = 150    # ⭐ 150 piksel
+        self.position_cooldown_sec = 10         # ⭐ 10 saniye
         
         self.on_violation = None
         self.VIOLATIONS_DIR = "ihlal_kayitlari"
@@ -76,14 +76,17 @@ class SpeedEngine:
         """⭐ Mekansal Soğuma: Aynı bölgede yakın zamanda benzer bir ihlal raporlandı mı?"""
         now = time.time()
         self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
+        v_cat = v_type.split('(')[0].strip() # "HIZ IHLALI" veya "YAYA IHLALI" vb.
         for ts, ax, ay, atype in self.alarm_ledger:
-            if atype == v_type:
+            a_cat = atype.split('(')[0].strip()
+            if a_cat == v_cat:
                 dist = ((cx - ax)**2 + (cy - ay)**2)**0.5
                 if dist < self.spatial_threshold and (now - ts) < self.temporal_threshold:
                     return True
         return False
 
     def log_violation(self, vehicle_id, frame, speed=None, box=None, violation_type=None):
+        current_time = time.time()
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         v_type = violation_type or (f"HIZ IHLALI ({speed:.1f} KM/H)" if speed else "IHLAL")
         
@@ -99,12 +102,14 @@ class SpeedEngine:
             cy = int((box[1] + box[3]) / 2)
             if self._is_position_in_cooldown(cx, cy):
                 return
-        # 2. Thread-safe ID bazlı kontrol
+        v_cat = v_type.split('(')[0].strip()
+        # 2. Thread-safe ID + Kategori bazlı kontrol
         with self.shared_violation_lock:
-            last_time = self.shared_violation_log.get(vehicle_id, 0)
+            key = f"{vehicle_id}_{v_cat}"
+            last_time = self.shared_violation_log.get(key, 0)
             if (current_time - last_time) < self.violation_cooldown_sec:
                 return
-            self.shared_violation_log[vehicle_id] = current_time
+            self.shared_violation_log[key] = current_time
         # ⭐ Konum kaydını yap
         if box is not None:
             self._register_violation_position(int((box[0]+box[2])/2), int((box[1]+box[3])/2))
@@ -172,7 +177,7 @@ class SpeedEngine:
                 cv2.polylines(display_frame, [self.ped_roi_polygon], True, (255, 0, 255), 2)
 
                 self.frame_count += 1
-                if self.model: # ⭐ Her frame analiz edilecek
+                if self.model: 
                     results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
@@ -187,9 +192,9 @@ class SpeedEngine:
                         
                         for box, id, cls, conf in zip(boxes, ids, clss, confs):
                             x1, y1, x2, y2 = map(int, box)
-                            cx, cy = int((x1+x2)/2), int(y2)
+                            cx, cy = int((x1+x2)/2), int((y1+y2)/2) # ⭐ Aracın tam orta noktası
                             
-                            # 1️⃣ ROI Kontrolü (Bottom-Center)
+                            # 1️⃣ ROI Kontrolü (Merkez Nokta)
                             is_in_roi = cv2.pointPolygonTest(self.ped_roi_polygon, (float(cx), float(cy)), False) >= 0
                             
                             # 2️⃣ Histerezis (M-out-of-N)
@@ -197,7 +202,7 @@ class SpeedEngine:
                             self.violation_buffer[id].append(is_in_roi)
                             if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
                             
-                            # Onay: Son 5 karenin 3'ünde bölgede olması şart (Daha hızlı tepki)
+                            # Onay: Son 8 karenin 3'ünde bölgede olması şart
                             roi_confirmed = sum(self.violation_buffer[id]) >= 3
                             
                             if cls == 0 and conf > 0.25:
@@ -221,8 +226,10 @@ class SpeedEngine:
                                             self.log_violation(id, frame, speed=speed, box=box)
                                     del self.entry_times[id]
                                     
-                                if id in self.prev_positions and self.prev_positions[id] > self.middle_y and cy <= self.middle_y and roi_confirmed:
-                                    self.log_violation(id, frame, box=box, violation_type="Hız Ters Yön")
+                                # Ters Yön Kontrolü: Basit çizgi geçişi (aşağıdan yukarı)
+                                if id in self.prev_positions and roi_confirmed:
+                                    if self.prev_positions[id] > self.middle_y and cy <= self.middle_y:
+                                        self.log_violation(id, frame, box=box, violation_type="Hız Ters Yön")
                                     
                                 self.prev_positions[id] = cy
                                 color = (0, 255, 0) # Yeşil
