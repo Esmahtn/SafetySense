@@ -109,8 +109,8 @@ function App() {
             </div>
             <div>
               <h4 className="font-outfit font-black text-red-500 text-3xl mb-1 italic tracking-tighter">YENİ İHLAL!</h4>
-              <p className="text-xl text-white font-black uppercase tracking-tight">{newAlert.type}</p>
-              <p className="text-xs text-gray-400 font-bold uppercase mt-1 opacity-60">{newAlert.cam_name}</p>
+              <p className="text-2xl text-white font-black uppercase tracking-tight">{newAlert.type}</p>
+              <p className="text-[11px] text-gray-400 font-bold uppercase mt-1 opacity-60 tracking-widest">{newAlert.cam_name}</p>
             </div>
           </div>
         </div>
@@ -204,9 +204,9 @@ function App() {
 
                   <div className="flex justify-between items-start mb-6 pr-10">
                     <div>
-                      <span className="bg-red-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase italic tracking-tighter">{item.type}</span>
-                      <h4 className="text-2xl font-outfit font-black mt-4 text-gray-200">{item.cam_name}</h4>
-                      <p className="text-xs text-gray-600 font-black mt-1 uppercase tracking-widest">{item.time}</p>
+                      <h4 className="text-2xl font-outfit font-black text-white uppercase tracking-tight leading-tight">{item.type}</h4>
+                      <p className="text-[10px] text-gray-500 font-black mt-1 uppercase tracking-widest">{item.cam_name}</p>
+                      <p className="text-[10px] text-gray-700 font-black mt-0.5 uppercase tracking-widest">{item.time}</p>
                     </div>
                   </div>
 

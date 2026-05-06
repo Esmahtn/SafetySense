@@ -8,13 +8,19 @@ from email.mime.base import MIMEBase
 from email import encoders
 
 # ---------------------------------------------------------
-# E-POSTA AYARLARI
+# E-POSTA AYARLARI — .env dosyasından okunur
 # ---------------------------------------------------------
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "esmahatunakbulut5@gmail.com"   # <-- Gmail adresinizi girin
-SENDER_PASSWORD = "erlkpdfbvpprsxjv"  # <-- 16 haneli uygulama şifresini girin
-TARGET_EMAIL = "esmahtnak@gmail.com"
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv kurulu değilse ortam değişkenlerini doğrudan okur
+
+SMTP_SERVER   = os.getenv("SMTP_SERVER",   "smtp.gmail.com")
+SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
+SENDER_EMAIL  = os.getenv("SENDER_EMAIL",  "")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
+TARGET_EMAIL  = os.getenv("TARGET_EMAIL",  "")
 # ---------------------------------------------------------
 
 

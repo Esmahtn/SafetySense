@@ -1,7 +1,9 @@
 import os
 import cv2
 import time
+import math
 import threading
+from threading import Lock
 import numpy as np
 import random
 import sqlite3
@@ -33,6 +35,11 @@ def init_db():
 init_db()
 sse_clients, cameras = [], {}
 
+# Kameralar arası ortak ihlal kaydı: {track_id: son_ihlal_zamani}
+# Aynı kişi hem hız hem yaya koridorunda tespit edilirse tekrar loglanmaz.
+shared_violation_log = {}
+shared_violation_lock = Lock()  # Thread-safe erişim için
+
 class CameraEngine:
     def __init__(self, cam_id, name, source, model=None):
         self.cam_id, self.name, self.source = cam_id, name, source
@@ -42,17 +49,55 @@ class CameraEngine:
         self.cap.set(cv2.CAP_PROP_POS_MSEC, 160000) # 2:40
         self.cap.start()
         self.current_frame = None
+        self.frame_count = 0  # ⭐ Frame atlama için
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
         self.frame_buffer = deque(maxlen=int(self.fps * 4))
         self.violators, self.prev_positions, self.start_points = set(), {}, {}
-        self.last_global_violation_time, self.violation_cooldown_sec = 0, 15
+        self.violation_cooldown_sec = 15       # ⭐ 15 saniye (ID bazlı)
+        self.shared_violation_log = shared_violation_log
+        self.shared_violation_lock = shared_violation_lock
+        # ⭐ Konum bazlı cooldown
+        self._recent_violation_positions = []  # [(cx, cy, timestamp)]
+        self.position_cooldown_radius = 120    # ⭐ 120 piksel (Geri döndük)
+        self.position_cooldown_sec = 15         # ⭐ 15 saniye (Konum bazlı)
+        # Bellek temizliği
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 60
         self.on_violation = None
         self.roi_polygon = np.array([(383, 32), (92, 276), (630, 273), (402, 31)], dtype=np.int32)
         self.ref_width, self.ref_height, self.roi_scaled, self.middle_y = 800, 450, False, None
 
+    def _is_position_in_cooldown(self, cx, cy):
+        now = time.time()
+        self._recent_violation_positions = [
+            (x, y, t) for x, y, t in self._recent_violation_positions
+            if now - t < self.position_cooldown_sec
+        ]
+        for x, y, t in self._recent_violation_positions:
+            if math.sqrt((cx - x) ** 2 + (cy - y) ** 2) < self.position_cooldown_radius:
+                return True
+        return False
+
+    def _register_violation_position(self, cx, cy):
+        self._recent_violation_positions.append((cx, cy, time.time()))
+
     def log_violation(self, vehicle_id, frame, box=None, violation_type="Ters Yön İhlali"):
-        if (time.time() - self.last_global_violation_time) < self.violation_cooldown_sec: return
-        self.last_global_violation_time = time.time()
+        current_time = time.time()
+        # ⭐ 1. Konum bazlı kontrol
+        if box is not None:
+            cx = int((box[0] + box[2]) / 2)
+            cy = int((box[1] + box[3]) / 2)
+            if self._is_position_in_cooldown(cx, cy):
+                return
+        # 2. Thread-safe ID bazlı kontrol
+        with self.shared_violation_lock:
+            last_time = self.shared_violation_log.get(vehicle_id, 0)
+            if (current_time - last_time) < self.violation_cooldown_sec:
+                return
+            self.shared_violation_log[vehicle_id] = current_time
+        # ⭐ Konum kaydını yap
+        if box is not None:
+            self._register_violation_position(cx, cy)
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         img_name = f"ters_{datetime.now().strftime('%H%M%S')}_{random.randint(1000,9999)}.jpg"
         img_path = os.path.join(VIOLATIONS_DIR, img_name)
@@ -66,47 +111,73 @@ class CameraEngine:
         cursor.execute('INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path) VALUES (?, ?, ?, ?, ?, ?)',
                        (int(vehicle_id), self.name, violation_type, ts_str, img_name, ""))
         conn.commit(); last_id = cursor.lastrowid; conn.close()
+        # 4️⃣ E-posta bildirimi
+        from mailer import send_violation_email
+        send_violation_email(self.name, violation_type, int(vehicle_id), ts_str, img_path)
         if self.on_violation: self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": violation_type, "time": ts_str, "img": img_name})
 
     def process(self):
         while True:
-            if self.model is None and hasattr(self, 'model_name') and self.model_name: self.model = YOLO(self.model_name); self.model_name = None
-            if not self.cap.isOpened(): time.sleep(1); continue
-            ret, frame = self.cap.read()
-            if not ret: time.sleep(0.01); continue
-            h, w = frame.shape[:2]
-            if not self.roi_scaled:
-                sx, sy = w / self.ref_width, h / self.ref_height
-                self.roi_polygon = np.array([(int(px*sx), int(py*sy)) for px, py in self.roi_polygon], dtype=np.int32); self.roi_scaled = True
-            if self.middle_y is None: self.middle_y = int(h * 0.6)
-            display_frame = frame.copy()
-            cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
-            if self.model:
-                results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort.yaml", verbose=False)
-                if results and results[0].boxes.id is not None:
-                    boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
-                    for box, id in zip(boxes, ids):
-                        cx, cy = int((box[0]+box[2])/2), int((box[1]+box[3])/2); base_y = int(box[3])
-                        if cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) < 0: continue
-                        if id not in self.start_points: self.start_points[id] = (cx, base_y)
-                        if id not in self.prev_positions: self.prev_positions[id] = base_y; continue
-                        p_y, (s_x, s_y) = self.prev_positions[id], self.start_points[id]
-                        dy, dx = s_y - base_y, abs(s_x - cx)
-                        if dy > (dx * 1.5) and ((p_y > self.middle_y and base_y <= self.middle_y) or (base_y < self.middle_y and dy > 12)): self.log_violation(id, frame, box)
-                        self.prev_positions[id] = base_y
-                        cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
-            preview = cv2.resize(display_frame, (800, 450)); _, buffer = cv2.imencode('.jpg', preview); self.current_frame = buffer.tobytes(); time.sleep(0.01)
+            try:
+                if self.model is None and hasattr(self, 'model_name') and self.model_name: self.model = YOLO(self.model_name); self.model_name = None
+                if not self.cap.isOpened(): time.sleep(1); continue
+                ret, frame = self.cap.read()
+                if not ret: time.sleep(0.01); continue
+                
+                h, w = frame.shape[:2]
+                if not self.roi_scaled:
+                    sx, sy = w / self.ref_width, h / self.ref_height
+                    self.roi_polygon = np.array([(int(px*sx), int(py*sy)) for px, py in self.roi_polygon], dtype=np.int32); self.roi_scaled = True
+                if self.middle_y is None: self.middle_y = int(h * 0.6)
+                
+                display_frame = frame.copy()
+                cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
+                
+                self.frame_count += 1
+                if self.model and self.frame_count % 2 == 0:  # ⭐ 2 frame'de 1 analiz
+                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.25, tracker="botsort_custom.yaml", verbose=False)
+                    if results and results[0].boxes.id is not None:
+                        boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
+                        for box, id in zip(boxes, ids):
+                            cx, cy = int((box[0]+box[2])/2), int((box[1]+box[3])/2); base_y = int(box[3])
+                            if cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) < 0: continue
+                            if id not in self.start_points: self.start_points[id] = (cx, base_y)
+                            if id not in self.prev_positions: self.prev_positions[id] = base_y; continue
+                            p_y, (s_x, s_y) = self.prev_positions[id], self.start_points[id]
+                            dy, dx = s_y - base_y, abs(s_x - cx)
+                            if dy > (dx * 1.5) and ((p_y > self.middle_y and base_y <= self.middle_y) or (base_y < self.middle_y and dy > 12)): self.log_violation(id, frame, box)
+                            self.prev_positions[id] = base_y
+                            cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                
+                # Görüntüyü güncelle
+                preview = cv2.resize(display_frame, (800, 450)); _, buffer = cv2.imencode('.jpg', preview); self.current_frame = buffer.tobytes()
+                time.sleep(0.01)
+            except Exception as e:
+                print(f"CameraEngine Hatası: {e}")
+                time.sleep(1)
     def get_frame(self): return self.current_frame
 
 def notify(data):
     msg = json.dumps(data)
     for q in sse_clients: q.put(msg)
 
-def init_all_engines():
-    global cameras; video_base = r"C:\Users\bplas\Desktop\video"
-    engine1 = CameraEngine(1, "Ana Koridor", os.path.join(video_base, "192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi"))
-    engine2 = PedestrianEngine(2, "Güvensiz Bölge", os.path.join(video_base, "192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"))
-    engine3 = SpeedEngine(3, "Hız Koridoru", os.path.join(video_base, "192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"))
+def main():
+    if not os.path.exists(VIOLATIONS_DIR): os.makedirs(VIOLATIONS_DIR)
+    init_db()
+    
+    # ⭐ Modeli tekrar Nano'ya çekiyoruz (Hız ve Akıcılık için)
+    print("YOLOv11 Nano modeli yükleniyor...")
+    shared_model = YOLO("yolo11n.pt")
+    
+    video_base = r"c:\Users\bplas\Desktop\video"
+    engine1 = CameraEngine(1, "Ana Koridor", os.path.join(video_base, "192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi"), model=shared_model)
+    engine2 = PedestrianEngine(2, "Güvensiz Bölge", os.path.join(video_base, "192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"), model=shared_model)
+    engine3 = SpeedEngine(3, "Hız Koridoru", os.path.join(video_base, "192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"), model=shared_model)
+    # Hız ve yaya koridorları aynı ortak ihlal kaydını ve lock'ı paylaşır
+    engine2.shared_violation_log = shared_violation_log
+    engine2.shared_violation_lock = shared_violation_lock
+    engine3.shared_violation_log = shared_violation_log
+    engine3.shared_violation_lock = shared_violation_lock
     engine1.on_violation = engine2.on_violation = engine3.on_violation = notify
     cameras[1], cameras[2], cameras[3] = engine1, engine2, engine3
     for e in cameras.values(): threading.Thread(target=e.process, daemon=True).start()
@@ -168,5 +239,5 @@ def clear_all_violations():
     return jsonify({"status": "success"})
 
 if __name__ == '__main__':
-    threading.Thread(target=init_all_engines, daemon=True).start()
+    main()  # main içinde zaten engine threadleri başlatılıyor
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

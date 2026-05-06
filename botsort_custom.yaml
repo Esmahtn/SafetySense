@@ -3,14 +3,14 @@ tracker_type: botsort
 track_high_thresh: 0.25
 track_low_thresh: 0.1
 new_track_thresh: 0.25
-track_buffer: 90        # Varsayilan 30, 90 yaparak ID kopmasini azaltiyoruz
-match_thresh: 0.8
+track_buffer: 180        # 180 frame (~6 saniye 30fps'de) — ID kaybını minimize et
+match_thresh: 0.85       # Daha toleranslı eşleşme — kısa kayıplarda aynı ID devam et
 fuse_score: True
 
 # BoT-SORT specifics
 gmc_method: sparseOptFlow  # Kamera hareketi kompanzasyonu
 
-# ReID (CPU'da agir, simdilik kapali)
+# ReID (CPU'da ağır, şimdilik kapalı)
 proximity_thresh: 0.5
 appearance_thresh: 0.8
 with_reid: False
