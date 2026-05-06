@@ -8,9 +8,10 @@ Kullanım: python select_roi_hiz_yaya.py
 """
 import cv2
 import numpy as np
+from config import get_source
 
 # Hız kamerasının yerel video yolu
-VIDEO_SOURCE = r"C:\Users\bplas\Desktop\video\192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"
+VIDEO_SOURCE = get_source("HIZ_KORIDORU")
 
 points = []
 

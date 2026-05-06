@@ -9,13 +9,23 @@ from collections import deque
 from ultralytics import YOLO
 from async_camera import SmartCamera
 from mailer import send_violation_email
+import json
 
 class PedestrianEngine:
     def __init__(self, camera_id, camera_name, source, model=None):
         self.camera_id, self.camera_name, self.source = camera_id, camera_name, source
         self.model_name = "yolo11n.pt" if not model else None
         self.model = model
-        self.current_frame, self.running = None, True
+        self.person_in_roi_frames = {} # ID: frame_count
+        self.violation_buffer = {}     # ID: [is_in_roi, ...] (son 15 kare)
+        
+        # ⭐ Mekansal Soğuma (Alarm Ledger)
+        self.alarm_ledger = []
+        self.spatial_threshold = 100 # piksel
+        self.temporal_threshold = 10 # saniye (yayalar daha yavaş hareket eder)
+        
+        self.running = True
+        self.current_frame = None
         self.frame_count = 0  # ⭐ Frame atlama için
         
         # ROI Alanı
@@ -23,7 +33,17 @@ class PedestrianEngine:
         self.ref_width, self.ref_height, self.roi_scaled = 800, 450, False
         self.mask_polygon = np.array([[91, 980], [1094, 295], [1130, 297], [1170, 272], [1160, 265], [1260, 208], [1275, 198], [1271, 104], [1124, 84], [927, 67], [798, 54], [631, 57], [477, 62], [282, 81], [114, 107], [10, 134], [11, 718], [82, 971]], dtype=np.int32)
         
-        self.person_in_roi_frames = {}  # {track_id: frame_count}
+        # Özel maske yükle (varsa)
+        self.mask_path = "pedestrian_mask.json"
+        if os.path.exists(self.mask_path):
+            try:
+                with open(self.mask_path, "r") as f:
+                    custom_points = json.load(f)
+                    if custom_points:
+                        self.mask_polygon = np.array(custom_points, dtype=np.int32)
+                        print(f"[YAYA] Özel maske yüklendi: {len(custom_points)} nokta.")
+            except Exception as e:
+                print(f"[YAYA] Maske yüklenirken hata: {e}")
         
         # ID bazlı + kameralar arası cooldown (server.py inject eder)
         self.violation_cooldown_sec = 15
@@ -56,8 +76,26 @@ class PedestrianEngine:
     def _register_violation_position(self, cx, cy):
         self._recent_violation_positions.append((cx, cy, time.time()))
 
+    def _is_spatial_duplicate(self, cx, cy):
+        """⭐ Mekansal Soğuma: Aynı bölgede yakın zamanda yaya ihlali raporlandı mı?"""
+        now = time.time()
+        self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
+        for ts, ax, ay in self.alarm_ledger:
+            dist = ((cx - ax)**2 + (cy - ay)**2)**0.5
+            if dist < self.spatial_threshold and (now - ts) < self.temporal_threshold:
+                return True
+        return False
+
     def log_violation(self, person_id, frame, box=None):
+        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         current_time = time.time()
+        
+        if box is not None:
+            cx, cy = int((box[0] + box[2]) / 2), int(box[3])
+            if self._is_spatial_duplicate(cx, cy):
+                return
+            self.alarm_ledger.append((time.time(), cx, cy))
+            
         # ⭐ 1. Konum bazlı kontrol (ID'den bağımsız)
         if box is not None:
             cx = int((int(box[0]) + int(box[2])) / 2)
@@ -113,9 +151,18 @@ class PedestrianEngine:
         cap.set(cv2.CAP_PROP_POS_MSEC, 250000)
         cap.start()
         
-        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        scale_x, scale_y = width / self.ref_width, height / self.ref_height
-        self.roi_polygon = np.array([(int(x * scale_x), int(y * scale_y)) for x, y in self.roi_polygon], dtype=np.int32); self.roi_scaled = True
+        # Döngü içinde ilk geçerli kareyi bekle ve çözünürlüğü al
+        while self.running:
+            ret, frame = cap.read()
+            if ret:
+                h, w = frame.shape[:2]
+                scale_x, scale_y = w / self.ref_width, h / self.ref_height
+                self.roi_polygon = np.array([(int(x * scale_x), int(y * scale_y)) for x, y in self.roi_polygon], dtype=np.int32)
+                self.mask_polygon = np.array([(int(x * scale_x), int(y * scale_y)) for x, y in self.mask_polygon], dtype=np.int32)
+                self.roi_scaled = True
+                print(f"[YAYA] Çözünürlük belirlendi: {w}x{h}, Maske ölçeklendi.")
+                break
+            time.sleep(0.1)
         
         while self.running:
             try:
@@ -125,29 +172,50 @@ class PedestrianEngine:
                 if not ret: time.sleep(0.01); continue
                     
                 display_frame = frame.copy()
-                cv2.fillPoly(frame, [self.mask_polygon], (0, 0, 0))
+                
+                # Maskeyi hem analiz karesine (siyah) hem de görüntü karesine (yarı saydam siyah) uygula
+                mask_overlay = display_frame.copy()
+                cv2.fillPoly(mask_overlay, [self.mask_polygon], (0, 0, 0))
+                cv2.addWeighted(mask_overlay, 0.5, display_frame, 0.5, 0, display_frame) # Görsel onay için %50 şeffaf
+                
+                cv2.fillPoly(frame, [self.mask_polygon], (0, 0, 0)) # Analiz için tam siyah
                 cv2.polylines(display_frame, [self.roi_polygon], True, (0, 255, 255), 2)
                 
                 self.frame_count += 1
                 if self.model: # ⭐ Her frame analiz edilecek
-                    results = self.model.track(frame, persist=True, classes=[0], conf=0.35, imgsz=640, tracker="botsort.yaml", verbose=False)
+                    results = self.model.track(frame, persist=True, classes=[0], conf=0.35, imgsz=640, tracker="botsort_custom.yaml", verbose=False)
+                    active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
                         ids = results[0].boxes.id.int().cpu().tolist()
+                        active_ids = ids
                         
                         # 5️⃣ Periyodik bellek temizliği
                         if self.frame_count % 100 == 0: self._cleanup_stale_ids(ids)
                         
                         for box, track_id in zip(boxes, ids):
                             x1, y1, x2, y2 = map(int, box)
-                            if cv2.pointPolygonTest(self.roi_polygon, (float((x1+x2)/2), float(y2)), False) >= 0:
-                                self.person_in_roi_frames[track_id] = self.person_in_roi_frames.get(track_id, 0) + 1
-                                if self.person_in_roi_frames[track_id] >= 3:  # 3 frame üst üste
-                                    self.log_violation(track_id, frame, box=box)
-                            else:
-                                # ROI dışına çıkan kişinin sayacını sıfırla
-                                self.person_in_roi_frames.pop(track_id, None)
+                            cx, cy = int((x1+x2)/2), int(y2)
+                            
+                            # 1️⃣ ROI Kontrolü (Bottom-Center)
+                            is_in_roi = cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) >= 0
+                            
+                            # 2️⃣ Histerezis (M-out-of-N)
+                            if track_id not in self.violation_buffer: self.violation_buffer[track_id] = []
+                            self.violation_buffer[track_id].append(is_in_roi)
+                            if len(self.violation_buffer[track_id]) > 8: self.violation_buffer[track_id].pop(0)
+                            
+                            # Onay: Son 8 karenin 5'inde bölgede olması şart
+                            roi_confirmed = sum(self.violation_buffer[track_id]) >= 5
+                            
+                            if is_in_roi and roi_confirmed:
+                                self.log_violation(track_id, frame, box=box)
+                            
                             cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    
+                    # Buffer Temizliği
+                    for rid in list(self.violation_buffer.keys()):
+                        if rid not in active_ids: del self.violation_buffer[rid]
                 
                 # ⭐ Görüntüyü her zaman güncelle
                 preview = cv2.resize(display_frame, (800, 450))

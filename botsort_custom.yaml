@@ -3,8 +3,8 @@ tracker_type: botsort
 track_high_thresh: 0.25
 track_low_thresh: 0.1
 new_track_thresh: 0.25
-track_buffer: 180        # 180 frame (~6 saniye 30fps'de) — ID kaybını minimize et
-match_thresh: 0.85       # Daha toleranslı eşleşme — kısa kayıplarda aynı ID devam et
+track_buffer: 300        # 300 frame (~10 saniye 30fps'de) — ID kaybını minimize et
+match_thresh: 0.80       # Doküman önerisi — Eşleşme kararlılığı artırıldı
 fuse_score: True
 
 # BoT-SORT specifics

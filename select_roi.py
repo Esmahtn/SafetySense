@@ -8,8 +8,9 @@ Kullanım: python select_roi.py
 """
 import cv2
 import numpy as np
+from config import get_source
 
-VIDEO_PATH = "video/192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"
+VIDEO_PATH = get_source("GUVENSIZ_BOLGE")
 
 points = []
 

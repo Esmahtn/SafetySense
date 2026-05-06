@@ -18,6 +18,7 @@ from pedestrian_engine import PedestrianEngine
 from mailer import send_violation_email
 from speed_engine import SpeedEngine
 from async_camera import SmartCamera
+from config import get_source
 
 app = Flask(__name__)
 CORS(app)
@@ -43,21 +44,26 @@ shared_violation_lock = Lock()  # Thread-safe erişim için
 class CameraEngine:
     def __init__(self, cam_id, name, source, model=None):
         self.cam_id, self.name, self.source = cam_id, name, source
-        self.model_name = "yolo11n.pt" if not model else None
-        self.model = model
-        self.cap = SmartCamera(source, simulate_live=False)
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, 160000) # 2:40
-        self.cap.start()
-        self.current_frame = None
-        self.frame_count = 0  # ⭐ Frame atlama için
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
-        self.frame_buffer = deque(maxlen=int(self.fps * 4))
-        self.violators, self.prev_positions, self.start_points = set(), {}, {}
-        self.violation_cooldown_sec = 15       # ⭐ 15 saniye (ID bazlı)
-        self.shared_violation_log = shared_violation_log
-        self.shared_violation_lock = shared_violation_lock
-        # ⭐ Konum bazlı cooldown
-        self._recent_violation_positions = []  # [(cx, cy, timestamp)]
+        self.cam_id, self.name = cam_id, name
+        self.source, self.name, self.roi_polygon, self.on_violation = source, name, [(383, 32), (92, 276), (630, 273), (402, 31)], None
+        self.cap = SmartCamera(source, simulate_live=True); self.cap.start()
+        self.model = None; self.model_name = "yolo11s.pt"
+        self.ref_width, self.ref_height = 1920, 1080
+        self.roi_scaled = False; self.middle_y = None
+        self.prev_positions = {}; self.start_points = {}
+        self.frame_count = 0
+        
+        # ⭐ Histerezis ve Karar Birikimi (M-out-of-N)
+        self.violation_buffer = {} # ID: [is_in_roi, is_in_roi, ...] (son 15 kare)
+        
+        # ⭐ Mekansal Soğuma (Alarm Ledger) - Global veya Sınıf bazlı
+        self.alarm_ledger = [] # [(timestamp, cx, cy, type), ...]
+        self.spatial_threshold = 120 # piksel (aynı bölge sayılması için mesafe)
+        self.temporal_threshold = 7 # saniye (aynı bölgede alarm basmama süresi)
+        
+        self.shared_violation_log = {}; self.shared_violation_lock = threading.Lock()
+        self.violation_cooldown_sec = 30
+        self._recent_violation_positions = [] # (cx, cy, timestamp)
         self.position_cooldown_radius = 120    # ⭐ 120 piksel (Geri döndük)
         self.position_cooldown_sec = 15         # ⭐ 15 saniye (Konum bazlı)
         # Bellek temizliği
@@ -81,23 +87,39 @@ class CameraEngine:
     def _register_violation_position(self, cx, cy):
         self._recent_violation_positions.append((cx, cy, time.time()))
 
+    def _is_spatial_duplicate(self, cx, cy, v_type):
+        """⭐ Mekansal Soğuma: Aynı bölgede yakın zamanda alarm verildi mi?"""
+        now = time.time()
+        # Eski kayıtları temizle (10 saniyeden eski olanlar)
+        self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
+        
+        for ts, ax, ay, atype in self.alarm_ledger:
+            if atype == v_type:
+                dist = ((cx - ax)**2 + (cy - ay)**2)**0.5
+                if dist < self.spatial_threshold and (now - ts) < self.temporal_threshold:
+                    return True
+        return False
+
     def log_violation(self, vehicle_id, frame, box=None, violation_type="Ters Yön İhlali"):
         current_time = time.time()
-        # ⭐ 1. Konum bazlı kontrol
+        
         if box is not None:
-            cx = int((box[0] + box[2]) / 2)
-            cy = int((box[1] + box[3]) / 2)
-            if self._is_position_in_cooldown(cx, cy):
+            cx, cy = int((box[0] + box[2]) / 2), int(box[3]) # BOTTOM-CENTER
+            
+            # 1. Mekansal Soğuma Kontrolü (ID bağımsız koruma)
+            if self._is_spatial_duplicate(cx, cy, violation_type):
                 return
+                
         # 2. Thread-safe ID bazlı kontrol
         with self.shared_violation_lock:
             last_time = self.shared_violation_log.get(vehicle_id, 0)
             if (current_time - last_time) < self.violation_cooldown_sec:
                 return
             self.shared_violation_log[vehicle_id] = current_time
-        # ⭐ Konum kaydını yap
+            
+        # ⭐ Ledger'a kaydet
         if box is not None:
-            self._register_violation_position(cx, cy)
+            self.alarm_ledger.append((current_time, cx, cy, violation_type))
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         img_name = f"ters_{datetime.now().strftime('%H%M%S')}_{random.randint(1000,9999)}.jpg"
         img_path = os.path.join(VIOLATIONS_DIR, img_name)
@@ -135,19 +157,44 @@ class CameraEngine:
                 
                 self.frame_count += 1
                 if self.model: # ⭐ Her frame analiz edilecek
-                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort.yaml", verbose=False)
+                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort_custom.yaml", verbose=False)
+                    active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
+                        active_ids = ids
                         for box, id in zip(boxes, ids):
-                            cx, cy = int((box[0]+box[2])/2), int((box[1]+box[3])/2); base_y = int(box[3])
-                            if cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) < 0: continue
-                            if id not in self.start_points: self.start_points[id] = (cx, base_y)
-                            if id not in self.prev_positions: self.prev_positions[id] = base_y; continue
+                            cx, cy = int((box[0]+box[2])/2), int(box[3]) # ⭐ BOTTOM-CENTER
+                            
+                            # 1️⃣ ROI Kontrolü (Bottom-Center üzerinden)
+                            is_in_roi = cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) >= 0
+                            
+                            # 2️⃣ Histerezis (Karar Birikimi)
+                            if id not in self.violation_buffer: self.violation_buffer[id] = []
+                            self.violation_buffer[id].append(is_in_roi)
+                            if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
+                            
+                            # Son 8 karenin en az 5'inde ROI içindeyse "İhlal Durumu" onaylanır
+                            roi_confirmed = sum(self.violation_buffer[id]) >= 5
+                            
+                            if not is_in_roi: 
+                                self.prev_positions.pop(id, None); continue
+                                
+                            if id not in self.start_points: self.start_points[id] = (cx, cy)
+                            if id not in self.prev_positions: self.prev_positions[id] = cy; continue
+                            
                             p_y, (s_x, s_y) = self.prev_positions[id], self.start_points[id]
-                            dy, dx = s_y - base_y, abs(s_x - cx)
-                            if dy > (dx * 1.5) and ((p_y > self.middle_y and base_y <= self.middle_y) or (base_y < self.middle_y and dy > 12)): self.log_violation(id, frame, box)
-                            self.prev_positions[id] = base_y
+                            dy, dx = s_y - cy, abs(s_x - cx)
+                            
+                            # 3️⃣ İhlal Kararı (Histerezis Onayı ile)
+                            if roi_confirmed and dy > (dx * 1.5) and ((p_y > self.middle_y and cy <= self.middle_y) or (cy < self.middle_y and dy > 15)): 
+                                self.log_violation(id, frame, box)
+                                
+                            self.prev_positions[id] = cy
                             cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                    
+                    # Buffer Temizliği (Artık görünmeyen ID'ler)
+                    for rid in list(self.violation_buffer.keys()):
+                        if rid not in active_ids: del self.violation_buffer[rid]
                 
                 # Görüntüyü güncelle
                 preview = cv2.resize(display_frame, (800, 450)); _, buffer = cv2.imencode('.jpg', preview); self.current_frame = buffer.tobytes()
@@ -162,13 +209,15 @@ def notify(data):
     for q in sse_clients: q.put(msg)
 
 def main():
-    if not os.path.exists(VIOLATIONS_DIR): os.makedirs(VIOLATIONS_DIR)
     init_db()
     
-    video_base = r"c:\Users\bplas\Desktop\video"
-    engine1 = CameraEngine(1, "Ana Koridor", os.path.join(video_base, "192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi"))
-    engine2 = PedestrianEngine(2, "Güvensiz Bölge", os.path.join(video_base, "192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"))
-    engine3 = SpeedEngine(3, "Hız Koridoru", os.path.join(video_base, "192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"))
+    source1 = get_source("ANA_KORIDOR")
+    source2 = get_source("GUVENSIZ_BOLGE")
+    source3 = get_source("HIZ_KORIDORU")
+
+    engine1 = CameraEngine(1, "Ana Koridor", source1)
+    engine2 = PedestrianEngine(2, "Güvensiz Bölge", source2)
+    engine3 = SpeedEngine(3, "Hız Koridoru", source3)
     # Hız ve yaya koridorları aynı ortak ihlal kaydını ve lock'ı paylaşır
     engine2.shared_violation_log = shared_violation_log
     engine2.shared_violation_lock = shared_violation_lock
