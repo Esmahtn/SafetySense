@@ -8,7 +8,8 @@ import numpy as np
 import random
 import sqlite3
 import json
-from datetime import datetime
+import shutil
+from datetime import datetime, timedelta
 from collections import deque
 from queue import Queue
 from flask import Flask, Response, jsonify, send_from_directory, request
@@ -40,6 +41,48 @@ sse_clients, cameras = [], {}
 # Aynı kişi hem hız hem yaya koridorunda tespit edilirse tekrar loglanmaz.
 shared_violation_log = {}
 shared_violation_lock = Lock()  # Thread-safe erişim için
+
+def cleanup_old_records(days=7):
+    """Eski veritabanı kayıtlarını ve bunlara bağlı fiziksel dosyaları temizler."""
+    print(f"[*] Temizlik başlatıldı: {days} günden eski kayıtlar siliniyor...")
+    try:
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Silinecek kayıtların dosya yollarını al
+        cursor.execute("SELECT image_path, video_path FROM violations WHERE timestamp < ?", (cutoff_date,))
+        old_records = cursor.fetchall()
+        
+        deleted_count = 0
+        for record in old_records:
+            # Görseli sil
+            if record['image_path']:
+                img_p = os.path.join(VIOLATIONS_DIR, record['image_path'])
+                if os.path.exists(img_p):
+                    os.remove(img_p)
+            
+            # Videoyu sil (varsa)
+            if record['video_path']:
+                vid_p = os.path.join(VIOLATIONS_DIR, record['video_path'])
+                if os.path.exists(vid_p):
+                    os.remove(vid_p)
+            deleted_count += 1
+            
+        # DB kayıtlarını sil
+        cursor.execute("DELETE FROM violations WHERE timestamp < ?", (cutoff_date,))
+        conn.commit()
+        conn.close()
+        print(f"[+] Temizlik tamamlandı. {deleted_count} eski kayıt ve dosya silindi.")
+    except Exception as e:
+        print(f"[!] Temizlik hatası: {e}")
+
+def maintenance_loop():
+    """Arka planda periyodik temizlik yapar (Her 1 saatte bir kontrol)."""
+    while True:
+        cleanup_old_records(days=7) # Haftalık temizlik
+        time.sleep(3600) # 1 saat bekle
 
 class CameraEngine:
     def __init__(self, cam_id, name, source, model=None):
@@ -236,6 +279,9 @@ def main():
     engine1.on_violation = engine2.on_violation = engine3.on_violation = notify
     cameras[1], cameras[2], cameras[3] = engine1, engine2, engine3
     for e in cameras.values(): threading.Thread(target=e.process, daemon=True).start()
+    
+    # Bakım thread'ini başlat (Temizlik)
+    threading.Thread(target=maintenance_loop, daemon=True).start()
 
 @app.route('/stats')
 def stats():

@@ -37,34 +37,50 @@ class SmartCamera:
         return self
 
     def _update(self):
-        delay = 1.0 / self.fps 
+        """Thread içinde sürekli kare okur."""
+        last_frame_time = time.time()
+        
         while self.running:
             if not self.cap.isOpened():
                 self.cap.open(self.source)
                 time.sleep(2)
                 continue
 
-            start_time = time.time()
             ret, frame = self.cap.read()
+            
             if not ret:
-                # Video dosyası ise başa sar
+                # Bağlantı koptu veya video bitti
+                self.ret = False
+                # Video dosyasıysa başa sar (RTSP değilse)
                 if not (self.source.startswith("rtsp://") or self.source.startswith("http://") or self.source.isdigit()):
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
-                
-                # Canlı yayın ise bağlantı sorunu olabilir
-                self.cap.release()
-                time.sleep(2)
-                self.cap.open(self.source)
+                    time.sleep(0.1)
+                else:
+                    # Canlı yayında kopma varsa release yap ve bekle
+                    self.cap.release()
+                    time.sleep(2)
                 continue
 
+            # Kare başarıyla okundu
             self.ret = True
-            self.frame = frame.copy()
+            self.frame = frame
+            last_frame_time = time.time()
             
-            # FPS'e göre bekleme yaparak gerçek zamanlı akış sağla
-            elapsed = time.time() - start_time
-            sleep_time = max(0, delay - elapsed)
-            time.sleep(sleep_time) 
+            # ⭐ Watchdog: Eğer canlı yayınsa ve okuma çok hızlıysa 
+            # (RTSP zaten kendi hızında gönderir, sleep'e gerek yok)
+            # Ancak CPU'yu %100 bitirmemek için çok küçük bir bekleme:
+            if self.source.startswith("rtsp://") or self.source.startswith("http://"):
+                time.sleep(0.001) 
+            else:
+                # Video dosyası simülasyonu ise FPS'i koru
+                delay = 1.0 / self.fps
+                time.sleep(delay)
+
+            # ⭐ Bağlantı Sağlık Kontrolü: 5 saniye boyunca yeni kare gelmezse
+            if time.time() - last_frame_time > 5.0:
+                print(f"[!] Kamera Zaman Aşımı: {self.source}")
+                self.ret = False
+                self.cap.release()
 
     def read(self):
         if self.is_live:
