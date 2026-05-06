@@ -129,8 +129,8 @@ class PedestrianEngine:
                 cv2.polylines(display_frame, [self.roi_polygon], True, (0, 255, 255), 2)
                 
                 self.frame_count += 1
-                if self.model and self.frame_count % 2 == 0:  # ⭐ 2 frame'de 1 analiz
-                    results = self.model.track(frame, persist=True, classes=[0], conf=0.25, imgsz=320, tracker="botsort_custom.yaml", verbose=False)
+                if self.model: # ⭐ Her frame analiz edilecek
+                    results = self.model.track(frame, persist=True, classes=[0], conf=0.35, imgsz=640, tracker="botsort.yaml", verbose=False)
                     if results and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
                         ids = results[0].boxes.id.int().cpu().tolist()

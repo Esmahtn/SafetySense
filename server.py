@@ -134,8 +134,8 @@ class CameraEngine:
                 cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
                 
                 self.frame_count += 1
-                if self.model and self.frame_count % 2 == 0:  # ⭐ 2 frame'de 1 analiz
-                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=320, conf=0.25, tracker="botsort_custom.yaml", verbose=False)
+                if self.model: # ⭐ Her frame analiz edilecek
+                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort.yaml", verbose=False)
                     if results and results[0].boxes.id is not None:
                         boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
                         for box, id in zip(boxes, ids):
@@ -165,14 +165,10 @@ def main():
     if not os.path.exists(VIOLATIONS_DIR): os.makedirs(VIOLATIONS_DIR)
     init_db()
     
-    # ⭐ Modeli tekrar Nano'ya çekiyoruz (Hız ve Akıcılık için)
-    print("YOLOv11 Nano modeli yükleniyor...")
-    shared_model = YOLO("yolo11n.pt")
-    
     video_base = r"c:\Users\bplas\Desktop\video"
-    engine1 = CameraEngine(1, "Ana Koridor", os.path.join(video_base, "192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi"), model=shared_model)
-    engine2 = PedestrianEngine(2, "Güvensiz Bölge", os.path.join(video_base, "192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"), model=shared_model)
-    engine3 = SpeedEngine(3, "Hız Koridoru", os.path.join(video_base, "192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"), model=shared_model)
+    engine1 = CameraEngine(1, "Ana Koridor", os.path.join(video_base, "192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi"))
+    engine2 = PedestrianEngine(2, "Güvensiz Bölge", os.path.join(video_base, "192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi"))
+    engine3 = SpeedEngine(3, "Hız Koridoru", os.path.join(video_base, "192.168.12.5_ch50_20260422112304_20260422113058_hız.avi"))
     # Hız ve yaya koridorları aynı ortak ihlal kaydını ve lock'ı paylaşır
     engine2.shared_violation_log = shared_violation_log
     engine2.shared_violation_lock = shared_violation_lock

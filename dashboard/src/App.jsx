@@ -83,94 +83,178 @@ function App() {
 
   const filteredHistory = useMemo(() => {
     return stats.history.filter(item => {
+      // Camera Filter
       if (activeCam !== "all") {
-        const camId = activeCam === "1" ? "Ana Koridor" : activeCam === "2" ? "Güvensiz Bölge" : "Hız Koridoru";
-        if (!item.cam_name.includes(camId)) return false;
+        const camMap = { "1": "Ana Koridor", "2": "Güvensiz Bölge", "3": "Hız Koridoru" };
+        if (!item.cam_name.includes(camMap[activeCam])) return false;
       }
+      
+      // Type Filter
       if (activeType !== "all") {
-        const typeSearch = activeType === 'yaya' ? 'yaya' : activeType === 'hız' ? 'hız' : 'ters';
-        if (!item.type.toLowerCase().includes(typeSearch)) return false;
+        const typeMap = {
+          'yaya': 'yaya',
+          'hiz': 'hız',
+          'ters': 'ters'
+        };
+        if (!item.type.toLowerCase().includes(typeMap[activeType])) return false;
       }
+      
+      // Date Filter
       if (filterDate && item.time.split(' ')[0] !== filterDate) return false;
-      if (searchTerm && !item.vehicle_id.toString().includes(searchTerm) && !item.type.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+      
+      // Time Filter (Start/End)
+      if (startTime || endTime) {
+        const itemTime = item.time.split(' ')[1]; // "HH:MM:SS"
+        if (startTime && itemTime < startTime) return false;
+        if (endTime && itemTime > endTime) return false;
+      }
+      
+      // Search Term
+      if (searchTerm) {
+        const s = searchTerm.toLowerCase();
+        const matches = 
+          item.vehicle_id.toString().includes(s) || 
+          item.type.toLowerCase().includes(s) ||
+          item.cam_name.toLowerCase().includes(s);
+        if (!matches) return false;
+      }
+      
       return true;
     });
-  }, [stats.history, activeCam, activeType, searchTerm, filterDate]);
+  }, [stats.history, activeCam, activeType, searchTerm, filterDate, startTime, endTime]);
+
+  // Statistics for the sidebar
+  const camStats = useMemo(() => {
+    const counts = { "1": 0, "2": 0, "3": 0 };
+    stats.history.forEach(item => {
+      if (item.cam_name.includes("Ana Koridor")) counts["1"]++;
+      else if (item.cam_name.includes("Güvensiz Bölge")) counts["2"]++;
+      else if (item.cam_name.includes("Hız Koridoru")) counts["3"]++;
+    });
+    return counts;
+  }, [stats.history]);
+
+  const typeStats = useMemo(() => {
+    const counts = { 'yaya': 0, 'hiz': 0, 'ters': 0 };
+    stats.history.forEach(item => {
+      const t = item.type.toLowerCase();
+      if (t.includes("yaya")) counts['yaya']++;
+      if (t.includes("hız")) counts['hiz']++;
+      if (t.includes("ters")) counts['ters']++;
+    });
+    return counts;
+  }, [stats.history]);
 
   return (
-    <div className="min-h-screen bg-[#050507] text-white font-inter flex flex-col lg:flex-row overflow-hidden selection:bg-red-500/30">
+    <div className="min-h-screen bg-[#020203] text-white font-inter flex flex-col overflow-x-hidden selection:bg-red-500/30">
       
       {/* Toast Alert */}
       {newAlert && (
-        <div className="fixed top-10 right-10 z-[200] animate-in fade-in slide-in-from-right duration-500">
-          <div className="glass border-red-500/50 p-8 rounded-[40px] flex items-center gap-6 glow-red shadow-[0_0_80px_rgba(239,68,68,0.5)] bg-black/80 backdrop-blur-3xl min-w-[400px]">
-            <div className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center animate-pulse shadow-2xl shadow-red-600/50">
-              <ShieldAlert size={40} className="text-white" />
+        <div className="fixed top-10 right-10 z-[300] animate-in fade-in slide-in-from-right duration-500">
+          <div className="glass border-red-500/50 p-6 rounded-3xl flex items-center gap-6 shadow-[0_0_80px_rgba(239,68,68,0.4)] bg-black/90 backdrop-blur-3xl border-2">
+            <div className="w-16 h-16 bg-red-600 rounded-2xl flex items-center justify-center animate-pulse shadow-xl shadow-red-600/50">
+              <ShieldAlert size={32} className="text-white" />
             </div>
             <div>
-              <h4 className="font-outfit font-black text-red-500 text-3xl mb-1 italic tracking-tighter">YENİ İHLAL!</h4>
-              <p className="text-2xl text-white font-black uppercase tracking-tight">{newAlert.type}</p>
-              <p className="text-[11px] text-gray-400 font-bold uppercase mt-1 opacity-60 tracking-widest">{newAlert.cam_name}</p>
+              <h4 className="font-outfit font-black text-red-500 text-2xl italic tracking-tighter">YENİ İHLAL!</h4>
+              <p className="text-xl text-white font-black uppercase tracking-tight">{newAlert.type}</p>
+              <p className="text-[10px] text-gray-500 font-bold uppercase mt-1 tracking-widest">{newAlert.cam_name}</p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Sidebar */}
-      <aside className="w-full lg:w-[380px] bg-[#0a0a0c] border-r border-white/5 p-8 flex flex-col space-y-6 z-30 overflow-y-auto custom-scrollbar">
-        <div className="flex items-center gap-4 mb-4">
-          <ShieldAlert size={32} className="text-red-600" />
-          <h1 className="text-2xl font-outfit font-black tracking-tighter italic">SafetySense</h1>
-        </div>
+      {/* Modern Top Header / Filter Hub */}
+      <header className="w-full bg-[#0a0a0c] border-b border-white/5 p-8 lg:p-12 space-y-12 z-50 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-red-600/5 blur-[150px] rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+        
+        <div className="max-w-[1800px] mx-auto flex flex-col lg:flex-row justify-between items-center gap-10">
+          <div className="flex items-center gap-6">
+            <div className="w-20 h-20 bg-red-600 rounded-[30px] flex items-center justify-center shadow-2xl shadow-red-600/40 rotate-6 group hover:rotate-0 transition-transform">
+              <ShieldAlert size={48} className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-5xl font-outfit font-black tracking-tighter italic leading-none text-white">SafetySense <span className="text-red-600 text-3xl">AI</span></h1>
+              <p className="text-xs text-gray-600 font-black tracking-[0.4em] mt-3 uppercase opacity-60">Visual Intelligence & Safety Control Center</p>
+            </div>
+          </div>
 
-        <nav className="space-y-1.5">
-          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest mb-2 ml-2">KAMERA SEÇİMİ</p>
-          <SidebarBtn active={activeCam === 'all'} onClick={() => setActiveCam('all')} icon={<LayoutGrid size={16}/>} label="TÜM KAMERALAR" />
-          <SidebarBtn active={activeCam === '1'} onClick={() => setActiveCam('1')} icon={<ArrowRightLeft size={16}/>} label="ANA KORİDOR" />
-          <SidebarBtn active={activeCam === '2'} onClick={() => setActiveCam('2')} icon={<User size={16}/>} label="GÜVENSİZ BÖLGE" />
-          <SidebarBtn active={activeCam === '3'} onClick={() => setActiveCam('3')} icon={<Zap size={16}/>} label="HIZ KORİDORU" />
-        </nav>
-
-        <div className="space-y-1.5 pt-4 border-t border-white/5">
-          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest mb-2 ml-2">İHLAL TÜRÜ</p>
-          <div className="grid grid-cols-2 gap-2">
-            <TypeBtn active={activeType === 'all'} onClick={() => setActiveType('all')} label="TÜMÜ" />
-            <TypeBtn active={activeType === 'yaya'} onClick={() => setActiveType('yaya')} label="YAYA" />
-            <TypeBtn active={activeType === 'hız'} onClick={() => setActiveType('hız')} label="HIZ" />
-            <TypeBtn active={activeType === 'ters'} onClick={() => setActiveType('ters')} label="TERS YÖN" />
+          <div className="flex flex-wrap justify-center lg:justify-end gap-6 w-full lg:w-auto">
+            <StatPill label="TOPLAM İHLAL" value={stats.total} icon={<AlertTriangle size={20} className="text-red-500" />} />
+            <StatPill label="BUGÜN AKTİF" value={stats.history.length} icon={<Zap size={20} className="text-orange-500" />} />
+            <StatPill label="CANLI KAMERA" value="3" icon={<Camera size={20} className="text-blue-500" />} />
           </div>
         </div>
 
-        <div className="space-y-4 pt-4 border-t border-white/5">
-          <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest ml-2">GELİŞMİŞ FİLTRE</p>
-          <input type="date" className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 px-4 text-sm text-gray-400" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} />
-          <div className="relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
-            <input type="text" placeholder="Ara..." className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-10 pr-4 text-sm focus:border-red-500/50" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        {/* INTERACTIVE VISUAL FILTERS (The "Charts" Müdür wanted) */}
+        <div className="max-w-[1800px] mx-auto grid grid-cols-1 xl:grid-cols-12 gap-8 relative z-10">
+          
+          {/* 1. Camera Distribution Chart */}
+          <div className="xl:col-span-5 bg-white/[0.02] border border-white/5 p-8 rounded-[45px] space-y-6 relative group">
+            <div className="flex justify-between items-center px-2">
+               <h3 className="text-[11px] font-black text-gray-500 uppercase tracking-[0.2em] flex items-center gap-3"><Camera size={16} className="text-red-500"/> KAMERA DAĞILIMI (Tıklanabilir)</h3>
+               {activeCam !== 'all' && <button onClick={() => setActiveCam('all')} className="text-[10px] font-black text-red-500 hover:underline z-20 relative">Sıfırla</button>}
+            </div>
+            <div className="flex items-end justify-between h-40 gap-4 px-4 pt-4 relative z-10">
+               <BarChartItem label="ANA KORİDOR" count={camStats["1"]} active={activeCam === '1'} onClick={() => setActiveCam('1')} total={stats.total} />
+               <BarChartItem label="GÜVENSİZ" count={camStats["2"]} active={activeCam === '2'} onClick={() => setActiveCam('2')} total={stats.total} />
+               <BarChartItem label="HIZ" count={camStats["3"]} active={activeCam === '3'} onClick={() => setActiveCam('3')} total={stats.total} />
+            </div>
           </div>
-          <button onClick={() => {setFilterDate(""); setSearchTerm(""); setActiveType("all"); setActiveCam("all"); setSelectedIds([]);}} className="w-full py-2 text-[10px] font-black text-gray-600 hover:text-red-500 flex items-center justify-center gap-2 transition-all"><RefreshCcw size={12}/> SIFIRLA</button>
+
+          {/* 2. Violation Categories (Interactive Cards) */}
+          <div className="xl:col-span-4 bg-white/[0.02] border border-white/5 p-8 rounded-[45px] space-y-6">
+             <h3 className="text-[11px] font-black text-gray-500 uppercase tracking-[0.2em] px-2 flex items-center gap-3"><Filter size={16} className="text-red-500"/> İHLAL KATEGORİLERİ</h3>
+             <div className="grid grid-cols-2 gap-4">
+                <MiniCategory active={activeType === 'all'} onClick={() => setActiveType('all')} label="TÜMÜ" count={stats.history.length} />
+                <MiniCategory active={activeType === 'yaya'} onClick={() => setActiveType('yaya')} label="YAYA" count={typeStats['yaya']} />
+                <MiniCategory active={activeType === 'hiz'} onClick={() => setActiveType('hiz')} label="HIZ" count={typeStats['hiz']} />
+                <MiniCategory active={activeType === 'ters'} onClick={() => setActiveType('ters')} label="TERS YÖN" count={typeStats['ters']} />
+             </div>
+          </div>
+
+          {/* 3. Advanced Engine Filters */}
+          <div className="xl:col-span-3 bg-white/[0.02] border border-white/5 p-8 rounded-[45px] flex flex-col justify-between space-y-6">
+             <div className="space-y-4">
+                <div className="relative group">
+                   <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600 group-focus-within:text-red-500 transition-colors" size={16} />
+                   <input type="date" className="w-full bg-black/40 border border-white/5 rounded-2xl py-4 pl-12 pr-4 text-sm text-gray-300 focus:border-red-500/50 outline-none transition-all" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} />
+                </div>
+                <div className="relative group">
+                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600 group-focus-within:text-red-500 transition-colors" size={16} />
+                   <input type="text" placeholder="Hızlı ara..." className="w-full bg-black/40 border border-white/5 rounded-2xl py-4 pl-12 pr-4 text-sm focus:border-red-500/50 outline-none transition-all" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                </div>
+             </div>
+             <button onClick={() => {setFilterDate(""); setSearchTerm(""); setActiveType("all"); setActiveCam("all"); setStartTime(""); setEndTime("");}} className="w-full py-4 text-[10px] font-black text-gray-600 hover:text-red-500 flex items-center justify-center gap-2 transition-all hover:bg-red-500/10 rounded-2xl border border-dashed border-white/10 hover:border-red-500/20">
+               <RefreshCcw size={14}/> FİLTRELERİ TEMİZLE
+             </button>
+          </div>
+
+        </div>
+      </header>
+
+      {/* Main Content Hub */}
+      <main className="flex-1 max-w-[1800px] mx-auto w-full p-8 lg:p-12 space-y-16 animate-fade-in">
+        
+        {/* ACTIVE FILTERS BADGES (Hepsiburada Style) */}
+        <div className="flex flex-wrap items-center gap-4">
+           <p className="text-[10px] font-black text-gray-700 uppercase tracking-widest mr-2">AKTİF FİLTRELER:</p>
+           {activeCam !== 'all' && <FilterBadge label={activeCam === '1' ? 'Ana Koridor' : activeCam === '2' ? 'Güvensiz Bölge' : 'Hız Koridoru'} onClear={() => setActiveCam('all')} />}
+           {activeType !== 'all' && <FilterBadge label={activeType.toUpperCase()} onClear={() => setActiveType('all')} />}
+           {filterDate && <FilterBadge label={filterDate} onClear={() => setFilterDate('')} />}
+           {searchTerm && <FilterBadge label={`Arama: ${searchTerm}`} onClear={() => setSearchTerm('')} />}
+           {activeCam === 'all' && activeType === 'all' && !filterDate && !searchTerm && <span className="text-[10px] font-bold text-gray-600">FİLTRE YOK</span>}
         </div>
 
-        <div className="mt-auto pt-4 border-t border-white/5">
-           <div className="bg-red-600/10 p-5 rounded-3xl border border-red-600/20 text-center">
-              <p className="text-3xl font-outfit font-black text-white">{stats.total}</p>
-              <p className="text-[9px] text-red-500 font-bold uppercase tracking-widest">GÜNLÜK TOPLAM</p>
-           </div>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto custom-scrollbar p-6 lg:p-12 space-y-12 bg-[#050507]">
-        <section className="space-y-8 animate-fade-in">
-          <div className="flex justify-between items-center">
-            <h2 className="text-4xl font-outfit font-black flex items-center gap-5 italic uppercase tracking-tighter">
-              <Monitor className="text-red-600" size={36} />
-              {activeCam === "all" ? "CANLI GÖZETİM DUVARI" : "ODAKLANMIŞ AKIŞ"}
-            </h2>
+        {/* Video Walls */}
+        <section className="space-y-10">
+          <div className="flex items-center gap-5">
+             <div className="h-10 w-1.5 bg-red-600 rounded-full"></div>
+             <h2 className="text-3xl font-outfit font-black italic uppercase tracking-tighter">CANLI GÖZETİM ÜNİTESİ</h2>
           </div>
 
           {activeCam === "all" ? (
-            <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-10">
               <CamCard id={1} title="Ana Koridor" endpoint="vehicle_stream" />
               <CamCard id={2} title="Güvensiz Bölge" endpoint="pedestrian_stream" />
               <CamCard id={3} title="Hız Koridoru" endpoint="speed_stream" />
@@ -180,57 +264,80 @@ function App() {
           )}
         </section>
 
-        <section className="space-y-10 pt-12 border-t border-white/5 pb-40">
-          <div className="flex justify-between items-end">
-             <h3 className="text-3xl font-outfit font-black text-red-500 flex items-center gap-4 italic uppercase tracking-tighter"><AlertTriangle size={32} /> İHLAL KAYITLARI</h3>
-             <div className="flex gap-4">
-                <button onClick={() => setSelectedIds(filteredHistory.map(x => x.id))} className="text-[10px] font-black text-white/50 hover:text-white uppercase tracking-widest">TÜMÜNÜ SEÇ</button>
-                <button onClick={handleClearAll} className="text-[10px] font-black text-red-500/50 hover:text-red-500 uppercase tracking-widest">ARŞİVİ BOŞALT</button>
-             </div>
-          </div>
+        {/* Violation Records */}
+        <section className="space-y-12 border-t border-white/5 pt-16 pb-40">
+           <div className="flex flex-col md:flex-row justify-between items-center gap-8">
+              <div className="flex items-center gap-5">
+                 <div className="w-16 h-16 bg-red-600/10 rounded-[25px] flex items-center justify-center text-red-500">
+                    <LayoutGrid size={28} />
+                 </div>
+                 <div>
+                    <h3 className="text-3xl font-outfit font-black italic uppercase tracking-tighter">İHLAL ANALİZ RAPORLARI</h3>
+                    <p className="text-[10px] text-gray-700 font-bold uppercase tracking-widest mt-1">Bulunan Kayıt: {filteredHistory.length}</p>
+                 </div>
+              </div>
+              
+              <div className="flex gap-4">
+                 <button onClick={() => setSelectedIds(filteredHistory.map(x => x.id))} className="px-6 py-3 rounded-2xl bg-white/5 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest transition-all">TÜMÜNÜ SEÇ</button>
+                 <button onClick={handleClearAll} className="px-6 py-3 rounded-2xl bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white text-[10px] font-black uppercase tracking-widest transition-all border border-red-500/20">ARŞİVİ BOŞALT</button>
+              </div>
+           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-12">
             {filteredHistory.map((item) => {
               const isSelected = selectedIds.includes(item.id);
+              const isCritical = item.type.toLowerCase().includes("yaya") || item.type.toLowerCase().includes("ters");
+              
               return (
                 <div 
                   key={item.id} 
-                  className={`bg-[#0a0a0c] rounded-[45px] p-8 border transition-all shadow-2xl relative group cursor-pointer ${isSelected ? 'border-red-600 ring-2 ring-red-600/50' : 'border-white/5 hover:border-red-600/40'}`}
+                  className={`group relative bg-[#0a0a0c] rounded-[50px] p-1 border transition-all duration-500 hover:scale-[1.02] cursor-pointer ${isSelected ? 'ring-4 ring-red-600/30' : ''}`}
                   onClick={() => toggleSelect(item.id)}
                 >
-                  <div className="absolute top-6 right-6">
-                    {isSelected ? <CheckSquare className="text-red-600" size={24} /> : <Square className="text-white/10" size={24} />}
-                  </div>
-
-                  <div className="flex justify-between items-start mb-6 pr-10">
-                    <div>
-                      <h4 className="text-2xl font-outfit font-black text-white uppercase tracking-tight leading-tight">{item.type}</h4>
-                      <p className="text-[10px] text-gray-500 font-black mt-1 uppercase tracking-widest">{item.cam_name}</p>
-                      <p className="text-[10px] text-gray-700 font-black mt-0.5 uppercase tracking-widest">{item.time}</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4" onClick={e => e.stopPropagation()}>
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">GENEL</p>
-                      <div className="aspect-video bg-black rounded-3xl overflow-hidden border border-white/5 cursor-zoom-in" onClick={() => setSelectedImage(`${API_BASE}/screenshots/${item.img}`)}>
-                         <img src={`${API_BASE}/screenshots/${item.img}`} className="w-full h-full object-cover" />
+                  <div className={`w-full h-full bg-[#0a0a0c] rounded-[48px] p-8 border ${isSelected ? 'border-red-600' : 'border-white/5 group-hover:border-white/20'}`}>
+                    <div className="flex justify-between items-start mb-8">
+                      <div className="flex gap-4">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isCritical ? 'bg-red-600/20 text-red-500' : 'bg-orange-500/20 text-orange-500'}`}>
+                          {isCritical ? <AlertTriangle size={24} /> : <Zap size={24} />}
+                        </div>
+                        <div>
+                          <h4 className="text-2xl font-outfit font-black text-white uppercase tracking-tight leading-tight">{item.type}</h4>
+                          <p className="text-[10px] text-gray-500 font-black mt-1 uppercase tracking-widest">{item.cam_name}</p>
+                        </div>
+                      </div>
+                      <div className={`px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest border ${isSelected ? 'bg-red-600 border-red-600 text-white' : 'bg-white/5 border-white/10 text-gray-700 group-hover:text-gray-400'}`}>
+                        {isSelected ? 'SEÇİLDİ' : `#${item.id}`}
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">ZOOM</p>
-                      <div className="aspect-video bg-black rounded-3xl overflow-hidden border border-white/5 cursor-zoom-in" onClick={() => setSelectedImage(`${API_BASE}/screenshots/crop_${item.img}`)}>
-                         <img src={`${API_BASE}/screenshots/crop_${item.img}`} className="w-full h-full object-cover" />
+
+                    <div className="grid grid-cols-2 gap-5 mb-8" onClick={e => e.stopPropagation()}>
+                      <div className="space-y-3">
+                        <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">OLAY ANI</p>
+                        <div className="aspect-[4/3] bg-black rounded-[30px] overflow-hidden border border-white/5 cursor-zoom-in group/img" onClick={() => setSelectedImage(`${API_BASE}/screenshots/${item.img}`)}>
+                           <img src={`${API_BASE}/screenshots/${item.img}`} className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-110" />
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <p className="text-[9px] font-black text-gray-700 uppercase tracking-widest ml-2 italic">DETAY (CROP)</p>
+                        <div className="aspect-[4/3] bg-black rounded-[30px] overflow-hidden border border-white/5 cursor-zoom-in group/img" onClick={() => setSelectedImage(`${API_BASE}/screenshots/crop_${item.img}`)}>
+                           <img src={`${API_BASE}/screenshots/crop_${item.img}`} className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-110" />
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }} 
-                    className="w-full mt-6 bg-green-600/10 hover:bg-red-600 hover:text-white py-3.5 rounded-3xl font-black text-xs border border-green-600/20 uppercase tracking-widest transition-all"
-                  >
-                    KAYDI SİL
-                  </button>
+                    <div className="flex items-center justify-between pt-6 border-t border-white/5">
+                      <div className="flex items-center gap-3">
+                        <Clock size={14} className="text-gray-700" />
+                        <span className="text-[11px] font-black text-gray-500 uppercase tracking-widest">{item.time}</span>
+                      </div>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }} 
+                        className="w-12 h-12 rounded-2xl bg-white/5 hover:bg-red-600 text-gray-700 hover:text-white flex items-center justify-center transition-all border border-white/5 hover:border-red-600"
+                      >
+                        <Trash size={18} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -263,15 +370,15 @@ function App() {
 
       {/* Detail Modal */}
       {selectedImage && (
-        <div className="fixed inset-0 z-[200] bg-black/98 backdrop-blur-3xl flex flex-col p-4 md:p-8 animate-in fade-in duration-300" onClick={() => setSelectedImage(null)}>
+        <div className="fixed inset-0 z-[400] bg-black/98 backdrop-blur-3xl flex flex-col p-4 md:p-8 animate-in fade-in duration-300" onClick={() => setSelectedImage(null)}>
            <div className="flex justify-between items-center text-white mb-6">
               <div className="flex items-center gap-4">
                 <ShieldAlert className="text-red-600" size={32} />
-                <h3 className="text-2xl font-outfit font-black italic uppercase tracking-widest">DETAYLI GÖRÜNTÜ</h3>
+                <h3 className="text-2xl font-outfit font-black italic uppercase tracking-widest">DETAYLI GÖRÜNTÜ ANALİZİ</h3>
               </div>
-              <button onClick={() => setSelectedImage(null)} className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center hover:bg-red-500 transition-all"><X size={36} /></button>
+              <button onClick={() => setSelectedImage(null)} className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center hover:bg-red-500 transition-all shadow-2xl"><X size={36} /></button>
            </div>
-           <div className="flex-1 w-full relative flex items-center justify-center overflow-hidden rounded-[50px] border border-white/10 bg-[#020203]" onClick={e => e.stopPropagation()}>
+           <div className="flex-1 w-full relative flex items-center justify-center overflow-hidden rounded-[60px] border border-white/10 bg-[#020203] shadow-[0_0_100px_rgba(255,255,255,0.02)]" onClick={e => e.stopPropagation()}>
               <img src={selectedImage} className="max-w-full max-h-full object-contain" />
            </div>
         </div>
@@ -280,40 +387,97 @@ function App() {
   );
 }
 
-// Sub-components
-function SidebarBtn({ active, onClick, icon, label }) {
+// Visual Dashboard Components
+function StatPill({ label, value, icon }) {
   return (
-    <button onClick={onClick} className={`w-full flex items-center gap-4 px-5 py-4 rounded-3xl transition-all font-black text-xs ${active ? 'bg-red-600 text-white shadow-xl shadow-red-600/30 translate-x-2' : 'text-gray-600 hover:bg-white/5 hover:text-white'}`}>
-      {icon} {label}
+    <div className="glass px-8 py-4 rounded-3xl flex items-center gap-6 border-white/5 hover:border-white/10 transition-colors">
+       <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center">{icon}</div>
+       <div className="text-left">
+          <p className="text-3xl font-outfit font-black tracking-tight">{value}</p>
+          <p className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">{label}</p>
+       </div>
+    </div>
+  );
+}
+
+function BarChartItem({ label, count, active, onClick, total }) {
+  const percentage = total > 0 ? Math.max(10, (count / total) * 100) : 10;
+  return (
+    <div className="flex-1 flex flex-col items-center gap-4 group cursor-pointer" onClick={onClick}>
+       <div className="w-full flex-1 relative flex items-end justify-center px-4">
+          <div 
+            style={{ height: `${percentage}%` }}
+            className={`w-full max-w-[40px] rounded-t-xl transition-all duration-700 relative ${active ? 'bg-red-600 shadow-[0_0_30px_rgba(239,68,68,0.5)]' : 'bg-white/5 group-hover:bg-white/10'}`}
+          >
+             {active && <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[10px] font-black px-2 py-1 rounded-md animate-bounce">{count}</div>}
+          </div>
+       </div>
+       <p className={`text-[9px] font-black uppercase tracking-tight text-center leading-tight ${active ? 'text-red-500' : 'text-gray-600'}`}>{label}</p>
+    </div>
+  );
+}
+
+function MiniCategory({ active, onClick, label, count }) {
+  return (
+    <button onClick={onClick} className={`relative p-5 rounded-[28px] border transition-all text-left overflow-hidden group ${active ? 'bg-red-600 border-red-600 shadow-xl' : 'bg-black/40 border-white/5 hover:border-white/10'}`}>
+       <p className={`text-[10px] font-black uppercase tracking-widest ${active ? 'text-white' : 'text-gray-600'}`}>{label}</p>
+       <p className={`text-2xl font-outfit font-black mt-1 ${active ? 'text-white' : 'text-white'}`}>{count}</p>
+       {active && <div className="absolute top-2 right-2 w-2 h-2 bg-white rounded-full"></div>}
     </button>
   );
 }
 
-function TypeBtn({ active, onClick, label }) {
+function FilterBadge({ label, onClear }) {
   return (
-    <button onClick={onClick} className={`py-2.5 rounded-2xl text-[10px] font-black transition-all border ${active ? 'bg-red-600 border-red-600 text-white shadow-lg shadow-red-600/20' : 'bg-white/5 border-white/10 text-gray-500 hover:text-white hover:border-white/20'}`}>
-      {label}
-    </button>
+    <div className="bg-red-600/10 border border-red-600/20 px-4 py-2 rounded-xl flex items-center gap-3 animate-in zoom-in duration-300">
+       <span className="text-[10px] font-black text-red-500 uppercase">{label}</span>
+       <button onClick={onClear} className="text-red-500 hover:text-white transition-colors"><X size={12} /></button>
+    </div>
   );
 }
 
 function CamCard({ id, title, endpoint }) {
   return (
-    <div className="bg-[#0a0a0c] rounded-[45px] overflow-hidden border border-white/5 shadow-2xl hover:border-red-600/30 transition-all">
-      <div className="p-6 border-b border-white/5 bg-white/[0.02] flex justify-between items-center">
-        <h4 className="text-xs font-black flex items-center gap-3 italic"><span className="w-2 h-2 bg-red-600 rounded-full animate-pulse shadow-lg shadow-red-600/50"></span>{title.toUpperCase()}</h4>
-        <span className="text-[10px] font-black text-gray-700 tracking-widest">CAM-0{id}</span>
+    <div className="bg-[#0a0a0c] rounded-[55px] overflow-hidden border border-white/5 shadow-2xl hover:border-red-600/30 transition-all group">
+      <div className="p-8 border-b border-white/5 bg-white/[0.01] flex justify-between items-center">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-red-600/10 rounded-2xl flex items-center justify-center group-hover:bg-red-600 transition-colors">
+            <Camera size={18} className="text-red-500 group-hover:text-white transition-colors" />
+          </div>
+          <div>
+            <h4 className="text-sm font-black flex items-center gap-3 italic tracking-tight uppercase">{title}</h4>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="w-1.5 h-1.5 bg-red-600 rounded-full animate-pulse shadow-lg shadow-red-600/50"></span>
+              <span className="text-[9px] font-black text-gray-600 uppercase tracking-widest">LIVE STREAM</span>
+            </div>
+          </div>
+        </div>
+        <div className="px-4 py-2 bg-white/5 rounded-2xl text-[9px] font-black text-gray-500 uppercase tracking-widest border border-white/5">CAM-0{id}</div>
       </div>
-      <div className="aspect-video bg-black"><img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain" /></div>
+      <div className="aspect-video bg-black relative group-hover:scale-[1.02] transition-transform duration-500">
+        <img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+      </div>
     </div>
   );
 }
 
 function BigCamView({ id, title, endpoint }) {
   return (
-    <div className="bg-[#0a0a0c] rounded-[60px] overflow-hidden border border-white/5 shadow-2xl">
-      <div className="p-10 border-b border-white/5 bg-white/[0.02] flex justify-between items-center"><h4 className="text-4xl font-outfit font-black tracking-tighter italic uppercase">{title}</h4></div>
-      <div className="aspect-video bg-black"><img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain" /></div>
+    <div className="bg-[#0a0a0c] rounded-[70px] overflow-hidden border-2 border-red-600/20 shadow-[0_0_80px_rgba(239,68,68,0.1)]">
+      <div className="p-10 border-b border-white/5 bg-white/[0.02] flex justify-between items-center">
+        <div className="flex items-center gap-6">
+           <div className="w-16 h-16 bg-red-600 rounded-[25px] flex items-center justify-center shadow-2xl shadow-red-600/40">
+              <Maximize2 size={32} className="text-white" />
+           </div>
+           <h4 className="text-5xl font-outfit font-black tracking-tighter italic uppercase">{title}</h4>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] text-red-500 font-black uppercase tracking-[0.3em]">FOCUSED CAMERA VIEW</p>
+          <p className="text-gray-600 font-black text-sm uppercase">CAM-0{id}</p>
+        </div>
+      </div>
+      <div className="aspect-video bg-black p-4"><img src={`${API_BASE}/${endpoint}`} className="w-full h-full object-contain rounded-[40px] shadow-2xl" /></div>
     </div>
   );
 }

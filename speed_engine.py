@@ -144,8 +144,8 @@ class SpeedEngine:
                 cv2.polylines(display_frame, [self.ped_roi_polygon], True, (255, 0, 255), 2)
 
                 self.frame_count += 1
-                if self.model and self.frame_count % 2 == 0:  # ⭐ 2 frame'de 1 analiz
-                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=320, conf=0.25, tracker="botsort_custom.yaml", verbose=False)
+                if self.model: # ⭐ Her frame analiz edilecek
+                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort.yaml", verbose=False)
                     if results and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
                         ids = results[0].boxes.id.cpu().numpy().astype(int)
