@@ -1,10 +1,10 @@
 # SafetySense - Optimized BoT-SORT config
 tracker_type: botsort
-track_high_thresh: 0.25
-track_low_thresh: 0.1
-new_track_thresh: 0.25
-track_buffer: 300        # 300 frame (~10 saniye 30fps'de) — ID kaybını minimize et
-match_thresh: 0.80       # Doküman önerisi — Eşleşme kararlılığı artırıldı
+track_high_thresh: 0.15
+track_low_thresh: 0.05
+new_track_thresh: 0.15
+track_buffer: 150        # 150 frame (~5 saniye 30fps'de) — Daha dinamik
+match_thresh: 0.70       # Daha esnek eşleşme
 fuse_score: True
 
 # BoT-SORT specifics

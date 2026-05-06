@@ -197,13 +197,17 @@ class SpeedEngine:
                             self.violation_buffer[id].append(is_in_roi)
                             if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
                             
-                            # Onay: Son 8 karenin 5'inde bölgede olması şart
-                            roi_confirmed = sum(self.violation_buffer[id]) >= 5
+                            # Onay: Son 5 karenin 3'ünde bölgede olması şart (Daha hızlı tepki)
+                            roi_confirmed = sum(self.violation_buffer[id]) >= 3
                             
                             if cls == 0 and conf > 0.25:
                                 if is_in_roi and roi_confirmed:
                                     self.log_violation(id, frame, box=box, violation_type="Yaya İhlali")
-                                cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                                
+                                color = (0, 0, 255) # Kırmızı
+                                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                                cv2.putText(display_frame, f"ID: {id} (YAYA)", (x1, y1 - 10), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                                 continue
                                 
                             if cls in [2, 3, 5, 7]:
@@ -221,7 +225,10 @@ class SpeedEngine:
                                     self.log_violation(id, frame, box=box, violation_type="Hız Ters Yön")
                                     
                                 self.prev_positions[id] = cy
-                                cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                color = (0, 255, 0) # Yeşil
+                                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                                cv2.putText(display_frame, f"ID: {id}", (x1, y1 - 10), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     
                     # Buffer Temizliği
                     for rid in list(self.violation_buffer.keys()):

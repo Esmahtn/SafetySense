@@ -205,13 +205,23 @@ class PedestrianEngine:
                             self.violation_buffer[track_id].append(is_in_roi)
                             if len(self.violation_buffer[track_id]) > 8: self.violation_buffer[track_id].pop(0)
                             
-                            # Onay: Son 8 karenin 5'inde bölgede olması şart
-                            roi_confirmed = sum(self.violation_buffer[track_id]) >= 5
+                            # Onay: Son 5 karenin 3'ünde bölgede olması şart (Daha hızlı tepki)
+                            roi_confirmed = sum(self.violation_buffer[track_id]) >= 3
                             
                             if is_in_roi and roi_confirmed:
                                 self.log_violation(track_id, frame, box=box)
                             
-                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            # Çizim (ID ve Durum)
+                            label = f"ID: {track_id}"
+                            if roi_confirmed:
+                                label += " (YAYA)"
+                                color = (0, 0, 255) # Kırmızı
+                            else:
+                                color = (0, 255, 255) # Sarı/Turkuaz
+                                
+                            cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                            cv2.putText(display_frame, label, (x1, y1 - 10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     
                     # Buffer Temizliği
                     for rid in list(self.violation_buffer.keys()):

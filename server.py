@@ -173,8 +173,8 @@ class CameraEngine:
                             self.violation_buffer[id].append(is_in_roi)
                             if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
                             
-                            # Son 8 karenin en az 5'inde ROI içindeyse "İhlal Durumu" onaylanır
-                            roi_confirmed = sum(self.violation_buffer[id]) >= 5
+                            # Son 5 karenin en az 3'ünde ROI içindeyse "İhlal Durumu" onaylanır (Daha hızlı tepki)
+                            roi_confirmed = sum(self.violation_buffer[id]) >= 3
                             
                             if not is_in_roi: 
                                 self.prev_positions.pop(id, None); continue
@@ -190,7 +190,17 @@ class CameraEngine:
                                 self.log_violation(id, frame, box)
                                 
                             self.prev_positions[id] = cy
-                            cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                            # Çizim (ID ve Durum)
+                            label = f"ID: {id}"
+                            if roi_confirmed:
+                                label += " (IHLAL)"
+                                color = (0, 0, 255) # Kırmızı
+                            else:
+                                color = (0, 255, 0) # Yeşil
+                                
+                            cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
+                            cv2.putText(display_frame, label, (int(box[0]), int(box[1]) - 10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     
                     # Buffer Temizliği (Artık görünmeyen ID'ler)
                     for rid in list(self.violation_buffer.keys()):
