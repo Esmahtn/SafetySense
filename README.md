@@ -79,4 +79,13 @@ python server.py
 ```
 
 ---
+
+## 🛠️ Yol Haritası (Roadmap)
+
+Sistemin gelecekteki geliştirmeleri şunları içermektedir:
+- **Dinamik Ayarlar Paneli:** Kamera IP'leri ve AI parametrelerinin web arayüzü üzerinden canlı olarak değiştirilmesi.
+- **Görsel ROI Kalibrasyonu:** Kullanıcının dashboard üzerinden alan çizerek (polygon drawing) ihlal bölgelerini otomatik olarak güncellemesi.
+- **Gelişmiş İstatistik Paneli:** Günlük/Haftalık ihlal trendlerinin grafiklerle görselleştirilmesi.
+
+---
 *Bu proje, iş sağlığı ve güvenliği (İSG) standartlarını yapay zeka ile bir üst seviyeye taşımak amacıyla geliştirilmiştir.*
