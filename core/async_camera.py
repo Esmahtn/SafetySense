@@ -16,21 +16,15 @@ class SmartCamera:
         if simulate_live:
             self.is_live = True
             
-        self.cap = cv2.VideoCapture(source)
-        
+        self.cap = cv2.VideoCapture() # Initialize empty
         self.ret = False
         self.frame = None
         self.running = False
-        
-        # Orijinal videonun FPS'ini alarak canlı yayın hızı belirle
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if not self.fps or self.fps <= 0:
-            self.fps = 25.0
+        self.fps = 25.0 # Default until opened
 
     def start(self):
-        """Threadi başlatır. set() işlemlerinden sonra çağrılmalıdır."""
-        if self.is_live and self.cap.isOpened() and not self.running:
-            self.ret, self.frame = self.cap.read()
+        """Threadi başlatır. Kaynağı arka planda açar."""
+        if not self.running:
             self.running = True
             self.thread = threading.Thread(target=self._update, daemon=True)
             self.thread.start()
@@ -39,12 +33,18 @@ class SmartCamera:
     def _update(self):
         """Thread içinde sürekli kare okur."""
         last_frame_time = time.time()
+        retry_count = 0
         
         while self.running:
             if not self.cap.isOpened():
+                retry_count += 1
+                print(f"[*] Kamera bağlantısı deneniyor ({retry_count}): {self.source}")
                 self.cap.open(self.source)
-                time.sleep(2)
-                continue
+                if self.cap.isOpened():
+                    self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
+                else:
+                    time.sleep(min(30, 2 * retry_count)) # Kademeli bekleme
+                    continue
 
             ret, frame = self.cap.read()
             
@@ -57,11 +57,13 @@ class SmartCamera:
                     time.sleep(0.1)
                 else:
                     # Canlı yayında kopma varsa release yap ve bekle
+                    print(f"[!] Akış kesildi, yeniden bağlanılıyor: {self.source}")
                     self.cap.release()
-                    time.sleep(2)
+                    time.sleep(5)
                 continue
 
             # Kare başarıyla okundu
+            retry_count = 0
             self.ret = True
             self.frame = frame
             last_frame_time = time.time()

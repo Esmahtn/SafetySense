@@ -45,3 +45,4 @@ dashboard/dist/
 # Sistem
 Thumbs.db
 .DS_Store
+python_bin/

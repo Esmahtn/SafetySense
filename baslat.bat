@@ -1,39 +1,39 @@
 @echo off
 setlocal
-echo =========================================
-echo    FABRIKA GUVENLIK AI SISTEMI (OFFLINE)
-echo =========================================
+title SafetySense AI - Canli Yayin
+echo ===================================================
+echo    SAFETY SENSE AI - CANLI YAYIN SISTEMI
+echo ===================================================
 echo.
 
-:: Paketler klasörünü kütüphane yoluna ekle
-set PYTHONPATH=%CD%;%CD%\paketler;%PYTHONPATH%
+:: Dosyanin bulundugu dizini baz al (USB ile tasinsada calisir)
+cd /d %~dp0
 
-echo 1. Ortam kontrol ediliyor...
-if exist "paketler" (
-    echo [BILGI] 'paketler' klasoru bulundu, yerel kutuphaneler kullaniliyor.
-) else (
-    echo [UYARI] 'paketler' klasoru bulunamadi! Internet varsa yukleme yapiliyor...
-    pip install -r requirements.txt -t paketler
+:: Tasinabilir Python yoksa hata ver
+if not exist "python_bin\python.exe" (
+    echo [HATA] python_bin klasoru bulunamadi!
+    echo Lutfen sistem yoneticinizle iletisime gecin.
+    pause
+    exit /b
 )
 
+echo [1/2] Yapay Zeka Sunucusu Baslatiliyor...
+echo       Lutfen bekleyin, modeller yukleniyor (~10 saniye)...
 echo.
-echo 2. Yapay Zeka Sunucusu Baslatiliyor...
-start "AI Sunucusu" cmd /c "set PYTHONPATH=%CD%;%CD%\paketler && python server.py"
 
-echo 3. Arayuz (Kontrol Paneli) Baslatiliyor...
-cd dashboard
-if exist "node_modules" (
-    echo [BILGI] 'node_modules' bulundu, NPM yuklemesi atlaniyor.
-    start "Kontrol Paneli" cmd /c "npm run dev"
-) else (
-    echo [UYARI] 'node_modules' bulunamadi! Internet varsa yukleme yapiliyor...
-    start "Kontrol Paneli" cmd /c "npm install && npm run dev"
-)
+:: python_bin icindeki Python ile server.py calistir
+start "SafetySense Sunucusu" cmd /k "python_bin\python.exe server.py"
+
+echo [2/2] Arayuz hazirlaniyor...
+timeout /t 10 >nul
+
+:: Flask uzerinden sunulan arayuzu ac
+start http://localhost:5000
 
 echo.
-echo Sistem hazirlaniyor... Lutfen bekleyin...
-timeout /t 8 >nul
-echo.
-echo Tarayici otomatik olarak aciliyor...
-start http://localhost:5173
-pause
+echo ===================================================
+echo  Sistem Calisiyor!
+echo  - Siyah sunucu penceresini KAPATMAYIN.
+echo  - Kamera IP/sifre ayari: config.py
+echo  - AI hassasiyet ayari:   ai_config.py
+echo ===================================================

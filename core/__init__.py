@@ -1,0 +1,1 @@
+# SafetySense Core Package

@@ -15,14 +15,24 @@ from queue import Queue
 from flask import Flask, Response, jsonify, send_from_directory, request
 from flask_cors import CORS
 from ultralytics import YOLO
-from pedestrian_engine import PedestrianEngine
-from mailer import send_violation_email
-from speed_engine import SpeedEngine
-from async_camera import SmartCamera
+from core.pedestrian_engine import PedestrianEngine
+from core.mailer import send_violation_email
+from core.speed_engine import SpeedEngine
+from core.async_camera import SmartCamera
 from config import get_source
+import ai_config
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='dashboard/dist', static_url_path='/')
 CORS(app)
+
+# --- ANA SAYFA (REACT DASHBOARD) ---
+@app.route('/')
+def index():
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/assets/<path:path>')
+def send_assets(path):
+    return send_from_directory(os.path.join(app.static_folder, 'assets'), path)
 
 VIOLATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ihlal_kayitlari")
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "violations.db")
@@ -89,8 +99,10 @@ class CameraEngine:
         self.cam_id, self.name, self.source = cam_id, name, source
         self.cam_id, self.name = cam_id, name
         self.source, self.name, self.roi_polygon, self.on_violation = source, name, [(383, 32), (92, 276), (630, 273), (402, 31)], None
-        self.cap = SmartCamera(source, simulate_live=True); self.cap.start()
-        self.model = None; self.model_name = "yolo11s.pt"
+        self.cap = SmartCamera(source, simulate_live=False)
+        self.cap.set(cv2.CAP_PROP_POS_MSEC, 170 * 1000) # 2:50'den başlat
+        self.cap.start()
+        self.model = None; self.model_name = ai_config.MODEL_NAME
         self.ref_width, self.ref_height = 1920, 1080
         self.roi_scaled = False; self.middle_y = None
         self.prev_positions = {}
@@ -181,7 +193,6 @@ class CameraEngine:
                        (int(vehicle_id), self.name, violation_type, ts_str, img_name, ""))
         conn.commit(); last_id = cursor.lastrowid; conn.close()
         # 4️⃣ E-posta bildirimi
-        from mailer import send_violation_email
         send_violation_email(self.name, violation_type, int(vehicle_id), ts_str, img_path)
         if self.on_violation: self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": violation_type, "time": ts_str, "img": img_name})
 
@@ -203,8 +214,10 @@ class CameraEngine:
                 cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
                 
                 self.frame_count += 1
-                if self.model: 
-                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort_custom.yaml", verbose=False)
+                should_process = not ai_config.ENABLE_FRAME_SKIPPING or (self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0)
+                
+                if self.model and should_process: 
+                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
@@ -236,10 +249,7 @@ class CameraEngine:
                             self.prev_positions[id] = cy
                             # Çizim (ID ve Durum)
                             label = f"ID: {id}"
-                            if roi_confirmed:
-                                color = (0, 0, 255) # Kırmızı (Bölgede onaylandı)
-                            else:
-                                color = (0, 255, 0) # Yeşil
+                            color = (0, 255, 255) if roi_confirmed else (0, 255, 0) # SARI = Onaylı, YEŞİL = Takip
                                 
                             cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
                             cv2.putText(display_frame, label, (int(box[0]), int(box[1]) - 10), 
@@ -268,9 +278,9 @@ def main():
     source2 = get_source("GUVENSIZ_BOLGE")
     source3 = get_source("HIZ_KORIDORU")
 
-    engine1 = CameraEngine(1, "Ana Koridor", source1)
-    engine2 = PedestrianEngine(2, "Güvensiz Bölge", source2)
-    engine3 = SpeedEngine(3, "Hız Koridoru", source3)
+    engine1 = CameraEngine(1, "1. Koridor", source1)
+    engine2 = PedestrianEngine(2, "2. Koridor", source2)
+    engine3 = SpeedEngine(3, "3. Koridor", source3)
     # Hız ve yaya koridorları aynı ortak ihlal kaydını ve lock'ı paylaşır
     engine2.shared_violation_log = shared_violation_log
     engine2.shared_violation_lock = shared_violation_lock

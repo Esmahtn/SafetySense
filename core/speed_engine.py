@@ -3,21 +3,23 @@ import time
 import os
 import sqlite3
 import random
+import math
 import numpy as np
 from threading import Lock
 from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
-from async_camera import SmartCamera
-from mailer import send_violation_email
+from .async_camera import SmartCamera
+from .mailer import send_violation_email
+import ai_config
 
 class SpeedEngine:
     def __init__(self, cam_id, name, source, model=None):
         self.cam_id, self.name, self.source = cam_id, name, source
-        self.model_name = "yolo11n.pt" if not model else None
+        self.model_name = ai_config.MODEL_NAME if not model else None
         self.model = model
         self.cap = SmartCamera(source, simulate_live=False)
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, 233 * 1000) # 3:53
+        self.cap.set(cv2.CAP_PROP_POS_MSEC, 172 * 1000) # 2:52'den başlat
         self.cap.start()
         
         self.entry_times, self.track_history = {}, {}
@@ -53,11 +55,31 @@ class SpeedEngine:
         self.DB_PATH = "violations.db"
         
         self.ped_roi_polygon = np.array([(491, 130), (552, 140), (413, 448), (4, 431)], dtype=np.int32)
-        self.roi_distance, self.roi_scaled, self.ref_width, self.ref_height, self.middle_y = 30, False, 800, 450, None
+        self.roi_distance = ai_config.SPEED_ROI_DISTANCE
+        self.roi_scaled, self.ref_width, self.ref_height, self.middle_y = False, 800, 450, None
+        
+        # ⭐ Hareketsiz Nesne Filtresi
+        self.stationary_counters = {}  # ID: frame_count
+        self.stationary_pixel_threshold = ai_config.STATIONARY_PIXEL_LIMIT
+        self.stationary_frame_limit = ai_config.STATIONARY_FRAME_LIMIT
+        self.conf_threshold = ai_config.YOLO_CONF_THRESHOLD
+
+    def get_current_timestamp(self):
+        """Hibrit Zaman Damgası: Video dosyasıysa video süresini, canlıysa gerçek saati kullanır."""
+        ts_msec = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        if ts_msec > 0:
+            return ts_msec / 1000.0
+        
+        # Eğer video dosyası olmasına rağmen POS_MSEC 0 ise (bazı AVI hataları), 
+        # frame_count ve FPS üzerinden simüle et.
+        fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if fps > 0 and self.frame_count > 0:
+            return self.frame_count / fps
+            
+        return time.time()
 
     def _is_position_in_cooldown(self, cx, cy):
         """Verilen merkez noktası yakın zamanda ihlal kaydedilen bir konuma yakın mı?"""
-        import math
         now = time.time()
         # Eski kayıtları temizle
         self._recent_violation_positions = [
@@ -152,7 +174,7 @@ class SpeedEngine:
     def _cleanup_stale_ids(self, active_ids):
         """5️⃣ Artık takip edilmeyen ID'leri sözlüklerden temizler (bellek sızıntısı önleme)."""
         active_set = set(active_ids)
-        for d in [self.prev_positions, self.entry_times, self.track_history]:
+        for d in [self.prev_positions, self.entry_times, self.track_history, self.stationary_counters]:
             stale = [k for k in d if k not in active_set]
             for k in stale:
                 del d[k]
@@ -177,8 +199,11 @@ class SpeedEngine:
                 cv2.polylines(display_frame, [self.ped_roi_polygon], True, (255, 0, 255), 2)
 
                 self.frame_count += 1
-                if self.model: 
-                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=640, conf=0.35, tracker="botsort_custom.yaml", verbose=False)
+                should_process = not ai_config.ENABLE_FRAME_SKIPPING or (self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0)
+                
+                if self.model and should_process: 
+                    current_ts = self.get_current_timestamp()
+                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=self.conf_threshold, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -205,49 +230,67 @@ class SpeedEngine:
                             # Onay: Son 8 karenin 3'ünde bölgede olması şart
                             roi_confirmed = sum(self.violation_buffer[id]) >= 3
                             
-                            if cls == 0 and conf > 0.25:
-                                if is_in_roi and roi_confirmed:
+                            # 3️⃣ Hareket Kontrolü (Hareketsiz nesneleri filtrele)
+                            is_moving = True
+                            if id in self.prev_positions:
+                                px, py = self.prev_positions[id]
+                                dist = math.sqrt((cx - px)**2 + (cy - py)**2)
+                                if dist < self.stationary_pixel_threshold:
+                                    self.stationary_counters[id] = self.stationary_counters.get(id, 0) + 1
+                                else:
+                                    self.stationary_counters[id] = 0
+                            
+                            if self.stationary_counters.get(id, 0) >= self.stationary_frame_limit:
+                                is_moving = False
+
+                            if cls == 0 and conf > self.conf_threshold:
+                                if is_in_roi and roi_confirmed and is_moving:
                                     self.log_violation(id, frame, box=box, violation_type="Yaya İhlali")
                                 
-                                color = (0, 0, 255) # Kırmızı
+                                # Yaya İkazı: Bölgede onaylandıysa KIRMIZI, değilse SARI
+                                color = (0, 0, 255) if (is_in_roi and roi_confirmed and is_moving) else (0, 255, 255)
+                                if not is_moving: color = (128, 128, 128)
+                                
                                 cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                                cv2.putText(display_frame, f"ID: {id} (YAYA)", (x1, y1 - 10), 
+                                status = "(YAYA!)" if is_moving else "(SABIT NESNE)"
+                                cv2.putText(display_frame, f"ID: {id} {status}", (x1, y1 - 10), 
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                self.prev_positions[id] = (cx, cy)
                                 continue
                                 
                             if cls in [2, 3, 5, 7]:
-                                if is_in_roi and id not in self.entry_times: 
-                                    self.entry_times[id] = time.time()
+                                if is_in_roi and id not in self.entry_times and is_moving: 
+                                    self.entry_times[id] = current_ts
                                 elif not is_in_roi and id in self.entry_times:
-                                    duration = time.time() - self.entry_times[id]
-                                    if duration > 0.3: # ⭐ Daha hızlı tespit için 0.5 -> 0.3
-                                        speed = (self.roi_distance / duration) * 3.6
-                                        if speed > 20 and roi_confirmed: 
+                                    duration = current_ts - self.entry_times[id]
+                                    if duration > ai_config.SPEED_CALC_MIN_DURATION and ai_config.ENABLE_SPEED_DETECTION:
+                                        speed = (self.roi_distance / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
+                                        if speed > ai_config.MIN_SPEED_LIMIT and roi_confirmed: 
                                             self.log_violation(id, frame, speed=speed, box=box)
                                     del self.entry_times[id]
                                     
                                 # Ters Yön Kontrolü: Basit çizgi geçişi (aşağıdan yukarı)
-                                if id in self.prev_positions and roi_confirmed:
-                                    if self.prev_positions[id] > self.middle_y and cy <= self.middle_y:
+                                if id in self.prev_positions and roi_confirmed and is_moving:
+                                    # Eski py değerine ulaşmak için:
+                                    _, old_py = self.prev_positions[id]
+                                    if old_py > self.middle_y and cy <= self.middle_y:
                                         self.log_violation(id, frame, box=box, violation_type="Hız Ters Yön")
                                     
-                                self.prev_positions[id] = cy
-                                color = (0, 255, 0) # Yeşil
+                                self.prev_positions[id] = (cx, cy)
+                                # Araç İkazı: Bölgede onaylandıysa SARI, değilse YEŞİL
+                                color = (0, 255, 255) if (is_in_roi and roi_confirmed and is_moving) else (0, 255, 0)
+                                if not is_moving: color = (128, 128, 128)
+                                
                                 cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                                cv2.putText(display_frame, f"ID: {id}", (x1, y1 - 10), 
+                                status = "" if is_moving else " (SABIT)"
+                                cv2.putText(display_frame, f"ID: {id}{status}", (x1, y1 - 10), 
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     
                     # Buffer Temizliği
                     for rid in list(self.violation_buffer.keys()):
                         if rid not in active_ids: 
-                            # Eğer araç bölgedeyken kaybolduysa (ekrandan çıktıysa) hızını hesapla
+                            # ID kaybolduğunda hatalı ölçüm yapmamak için kaydı siliyoruz
                             if rid in self.entry_times:
-                                duration = time.time() - self.entry_times[rid]
-                                if duration > 0.3:
-                                    speed = (self.roi_distance / duration) * 3.6
-                                    if speed > 20:
-                                        # Box bilgisi yok ama son bilinen bölgede olduğu için logla
-                                        self.log_violation(rid, frame, speed=speed)
                                 del self.entry_times[rid]
                             del self.violation_buffer[rid]
 

@@ -8,14 +8,15 @@ from datetime import datetime
 from threading import Lock
 from collections import deque
 from ultralytics import YOLO
-from async_camera import SmartCamera
-from mailer import send_violation_email
+from .async_camera import SmartCamera
+from .mailer import send_violation_email
+import ai_config
 import json
 
 class PedestrianEngine:
     def __init__(self, camera_id, camera_name, source, model=None):
         self.camera_id, self.camera_name, self.source = camera_id, camera_name, source
-        self.model_name = "yolo11n.pt" if not model else None
+        self.model_name = ai_config.MODEL_NAME if not model else None
         self.model = model
         self.person_in_roi_frames = {} # ID: frame_count
         self.violation_buffer = {}     # ID: [is_in_roi, ...] (son 15 kare)
@@ -27,7 +28,8 @@ class PedestrianEngine:
         
         self.running = True
         self.current_frame = None
-        self.frame_count = 0  # ⭐ Frame atlama için
+        self.frame_count = 0 
+        self.conf_threshold = ai_config.YOLO_CONF_THRESHOLD
         
         # ROI Alanı
         self.roi_polygon = np.array([(38, 446), (171, 346), (289, 258), (372, 199), (442, 148), (485, 124), (521, 96), (533, 86), (576, 91), (552, 192), (502, 329), (456, 448)], dtype=np.int32)
@@ -192,8 +194,10 @@ class PedestrianEngine:
                 cv2.polylines(display_frame, [self.roi_polygon], True, (0, 255, 255), 2)
                 
                 self.frame_count += 1
-                if self.model: 
-                    results = self.model.track(frame, persist=True, classes=[0], conf=0.35, imgsz=640, tracker="botsort_custom.yaml", verbose=False)
+                should_process = not ai_config.ENABLE_FRAME_SKIPPING or (self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0)
+                
+                if self.model and should_process: 
+                    results = self.model.track(frame, persist=True, classes=[0], conf=self.conf_threshold, imgsz=ai_config.YOLO_IMG_SIZE, tracker="botsort_custom.yaml", verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -224,10 +228,10 @@ class PedestrianEngine:
                             # Çizim (ID ve Durum)
                             label = f"ID: {track_id}"
                             if roi_confirmed:
-                                label += " (YAYA)"
-                                color = (0, 0, 255) # Kırmızı
+                                label += " (YAYA!)"
+                                color = (0, 0, 255) # KIRMIZI (İhlal)
                             else:
-                                color = (0, 255, 255) # Sarı/Turkuaz
+                                color = (0, 255, 255) # SARI (Bölgede)
                                 
                             cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                             cv2.putText(display_frame, label, (x1, y1 - 10), 
