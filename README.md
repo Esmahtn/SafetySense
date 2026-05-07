@@ -25,10 +25,13 @@ Belirlenen koridorlarda araçların (forklift, kamyon vb.) hızlarını anlık h
 ### 🔄 Ters Yön İhlali (Wrong Way Detection)
 Trafik akışının tek yönlü olduğu alanlarda, akışa zıt hareket eden nesneleri saniyeler içinde fark eder.
 
+### ⛑️ Baret ve İş Kıyafeti Denetimi (Helmet Detection)
+İş sahasındaki personellerin baret takıp takmadığını eş zamanlı olarak denetler. İnsan ve baret nesnelerini ilişkilendirerek (çakışma analizi), baret takmayan personeli anında kırmızı çerçeve ile işaretler.
+
 ### 📧 Otomatik Kanıt ve Bildirim Sistemi
 İhlal anında sistem:
 - **Screenshot:** Tam ekran ihlal karesini kaydeder.
-- **Auto-Crop:** İhlal yapan nesneyi otomatik yakınlaştırarak ayrı bir görsel oluşturur.
+- **Auto-Crop:** İhlal yapan nesneyi otomatik yakınlaştırarak (yakın çekim) ayrı bir görsel oluşturur.
 - **E-Posta:** Yetkililere görsellerle birlikte anlık SMTP bildirimi gönderir.
 - **Database:** Tüm verileri SQLite üzerinde tarihsel olarak saklar.
 
