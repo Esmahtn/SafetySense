@@ -62,6 +62,7 @@ class HybridEngine:
         self.tasks = tasks 
         self.cap = SmartCamera(source, simulate_live=False)
         self.cap.start()
+        self.running = True
         
         self.model = YOLO(ai_config.MODEL_NAME)
         self.ref_width, self.ref_height = 800, 450
@@ -77,6 +78,11 @@ class HybridEngine:
         
         self.current_frame = None
         self.on_violation = None
+
+    def stop(self):
+        self.running = False
+        if self.cap: self.cap.release()
+        print(f"Engine durduruldu: {self.name}")
 
     def update_config(self, cam_data):
         new_source = cam_data.get("source")
@@ -121,7 +127,7 @@ class HybridEngine:
             self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": v_type, "time": ts_str, "img": img_name})
 
     def process(self):
-        while True:
+        while self.running:
             try:
                 if not self.cap.isOpened(): time.sleep(1); continue
                 ret, frame = self.cap.read()
@@ -223,9 +229,19 @@ def api_config():
     if request.method == 'POST':
         new_config = request.json
         save_runtime_config(new_config)
-        for cid_str, cdata in new_config.get("cameras", {}).items():
-            cid = int(cid_str)
-            if cid in cameras: cameras[cid].update_config(cdata)
+        
+        new_cam_ids = [int(id_str) for id_str in new_config.get("cameras", {}).keys()]
+        
+        # Mevcut kameraları güncelle veya silinenleri durdur
+        current_ids = list(cameras.keys())
+        for cid in current_ids:
+            if cid not in new_cam_ids:
+                cameras[cid].stop()
+                del cameras[cid]
+            else:
+                cid_str = str(cid)
+                cameras[cid].update_config(new_config["cameras"][cid_str])
+        
         return jsonify({"status": "success"})
     return jsonify(load_runtime_config())
 
@@ -271,6 +287,35 @@ def delete_multiple():
 @app.route('/clear_all_violations', methods=['DELETE'])
 def clear_all_violations():
     conn = sqlite3.connect(DB_PATH); cursor = conn.cursor(); cursor.execute('DELETE FROM violations'); conn.commit(); conn.close(); return jsonify({"status": "success"})
+
+@app.route('/api/start_camera', methods=['POST'])
+def api_start_camera():
+    data = request.json
+    cam_id_val = data.get('camera_id')
+    if cam_id_val is None: return jsonify({"status": "error", "message": "ID missing"}), 400
+    
+    cid = int(cam_id_val)
+    cid_str = str(cam_id_val)
+    
+    config = load_runtime_config()
+    cam_data = config.get("cameras", {}).get(cid_str)
+    if not cam_data:
+        print(f"[!] Hata: Config'de ID {cid_str} bulunamadı. Mevcutlar: {list(config.get('cameras',{}).keys())}")
+        return jsonify({"status": "error", "message": "Config not found"}), 404
+    
+    if cid not in cameras:
+        print(f"[*] Yeni kamera motoru oluşturuluyor: {cam_data['name']} (ID: {cid})")
+        engine = HybridEngine(cid, cam_data['name'], cam_data['source'], cam_data.get('tasks', []))
+        engine.on_violation = notify
+        cameras[cid] = engine
+        t = threading.Thread(target=engine.process, daemon=True)
+        t.start()
+        print(f"[+] Kamera motoru başarıyla başlatıldı ve thread çalışıyor.")
+    else:
+        print(f"[*] Mevcut kamera motoru güncelleniyor: {cam_data['name']} (ID: {cid})")
+        cameras[cid].update_config(cam_data)
+        
+    return jsonify({"status": "success"})
 
 @app.route('/screenshots/<path:filename>')
 def get_screenshot(filename): return send_from_directory(VIOLATIONS_DIR, filename)

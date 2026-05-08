@@ -114,75 +114,9 @@
             ]
         },
         "4": {
-            "name": "4. Koridor (Örnek Hibrit)",
+            "name": "Kamera 4",
             "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
-            "tasks": [
-                {
-                    "roi": [
-                        [
-                            341,
-                            99
-                        ],
-                        [
-                            474,
-                            177
-                        ],
-                        [
-                            232,
-                            309
-                        ],
-                        [
-                            70,
-                            277
-                        ]
-                    ],
-                    "type": "speed"
-                },
-                {
-                    "roi": [
-                        [
-                            100,
-                            100
-                        ],
-                        [
-                            200,
-                            100
-                        ],
-                        [
-                            200,
-                            200
-                        ],
-                        [
-                            100,
-                            200
-                        ]
-                    ],
-                    "type": "pedestrian"
-                }
-            ]
-        },
-        "5": {
-            "name": "Yeni Kamera 5",
-            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
-            "tasks": [
-                {
-                    "type": "pedestrian",
-                    "roi": [
-                        [
-                            335,
-                            113
-                        ],
-                        [
-                            502,
-                            124
-                        ],
-                        [
-                            313,
-                            394
-                        ]
-                    ]
-                }
-            ]
+            "tasks": []
         }
     }
 }

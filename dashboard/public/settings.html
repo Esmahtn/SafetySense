@@ -53,12 +53,13 @@
                         KAMERA SEÇİMİ
                     </h2>
                     
-                    <div class="flex gap-4">
-                        <select id="camSelect" class="flex-1 bg-slate-900 border border-white/5 rounded-2xl p-4 text-sm focus:border-blue-500 outline-none transition-all">
-                            <!-- Dinamik dolacak -->
-                        </select>
-                        <button id="addCam" title="Yeni Kamera" class="w-14 h-14 bg-blue-600 hover:bg-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-900/20 transition-all font-black text-xl">+</button>
-                        <button id="deleteCam" title="Kamerayı Sil" class="w-14 h-14 bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white rounded-2xl flex items-center justify-center border border-red-900/10 transition-all font-black">✕</button>
+                    <div class="flex flex-col gap-4">
+                        <div id="camList" class="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                            <!-- Kameralar buraya gelecek -->
+                        </div>
+                        <button id="addCam" class="w-full py-4 bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white border border-blue-900/20 rounded-2xl flex items-center justify-center gap-2 transition-all font-black text-xs uppercase tracking-widest">
+                            <span class="text-xl">+</span> YENİ KAMERA EKLE
+                        </button>
                     </div>
 
                     <div class="space-y-4">
@@ -115,8 +116,8 @@
                         <canvas id="roiCanvas" class="absolute inset-0 w-full h-full"></canvas>
                         
                         <!-- Yönlendirme Uyarısı -->
-                        <div id="noTaskWarning" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50 transition-opacity duration-500">
-                            <div class="text-center p-8 glass rounded-3xl border-blue-500/30">
+                        <div id="noTaskWarning" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50 transition-all duration-500 pointer-events-none opacity-0">
+                            <div class="text-center p-8 glass rounded-3xl border-blue-500/30 pointer-events-auto">
                                 <div class="w-16 h-16 bg-blue-600/20 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01"/><path d="M12 16v-4"/><path d="M12 8V4"/><path d="M3 3l18 18"/></svg>
                                 </div>
@@ -181,8 +182,9 @@
 
         const COLORS = {
             wrong_way: '#3b82f6', // Mavi
-            pedestrian: '#ef4444', // Kırmızı
-            speed: '#a855f7' // Mor
+            wrong_way: '#3b82f6',
+            pedestrian: '#ef4444',
+            speed: '#a855f7'
         };
 
         const TYPE_NAMES = {
@@ -194,43 +196,104 @@
         async function fetchConfig() {
             const res = await fetch('/api/config');
             config = await res.json();
-            renderCamList();
-            if (Object.keys(config.cameras).length > 0) {
-                if (!config.cameras[currentCamId]) currentCamId = Object.keys(config.cameras)[0];
-                updateUI();
+            
+            const ids = Object.keys(config.cameras);
+            if (ids.length > 0) {
+                if (!currentCamId || !config.cameras[currentCamId]) {
+                    currentCamId = ids[0];
+                }
+            } else {
+                currentCamId = null;
             }
+            
+            renderCamList();
+            updateUI();
         }
 
         function renderCamList() {
-            const select = document.getElementById('camSelect');
-            select.innerHTML = '';
+            const list = document.getElementById('camList');
+            if (!list) return;
+            list.innerHTML = '';
+            
             Object.keys(config.cameras).forEach(id => {
-                const opt = document.createElement('option');
-                opt.value = id;
-                opt.innerText = config.cameras[id].name;
-                select.appendChild(opt);
+                const div = document.createElement('div');
+                div.className = `flex justify-between items-center p-4 rounded-2xl cursor-pointer transition-all border ${currentCamId === id ? 'bg-blue-600/20 border-blue-500 text-blue-500 shadow-[0_0_20px_rgba(37,99,235,0.1)]' : 'bg-white/5 border-transparent hover:bg-white/10 text-slate-400'}`;
+                div.onclick = () => { currentCamId = id; currentTaskId = null; updateUI(); renderCamList(); };
+                
+                div.innerHTML = `
+                    <div class="flex items-center gap-3 overflow-hidden">
+                        <div class="w-2 h-2 rounded-full ${config.cameras[id].source ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}"></div>
+                        <span class="font-bold truncate text-sm">${config.cameras[id].name || 'İsimsiz Kamera'}</span>
+                    </div>
+                    <button onclick="deleteCam(event, '${id}')" class="text-red-500 hover:scale-125 transition-transform p-2">✕</button>
+                `;
+                list.appendChild(div);
             });
-            select.value = currentCamId;
         }
+
+        window.deleteCam = async (event, id) => {
+            if (event) event.stopPropagation();
+            if (!confirm(`"${config.cameras[id].name}" kamerasını silmek istediğinize emin misiniz?`)) return;
+            
+            delete config.cameras[id];
+            
+            if (currentCamId === id) {
+                const remaining = Object.keys(config.cameras);
+                currentCamId = remaining.length > 0 ? remaining[0] : null;
+                currentTaskId = null;
+            }
+            
+            await saveAllConfigToServer();
+            renderCamList();
+            updateUI();
+        };
+
+        async function saveAllConfigToServer() {
+            try {
+                await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+            } catch (e) { console.error("Kayıt hatası:", e); }
+        }
+
+        document.getElementById('camName').addEventListener('input', (e) => {
+            if (currentCamId && config.cameras[currentCamId]) {
+                config.cameras[currentCamId].name = e.target.value;
+                renderCamList();
+            }
+        });
+
+        document.getElementById('camSource').addEventListener('input', (e) => {
+            if (currentCamId && config.cameras[currentCamId]) {
+                config.cameras[currentCamId].source = e.target.value;
+            }
+        });
 
         function updateUI() {
             const cam = config.cameras[currentCamId];
-            if (!cam) return;
+            if (!cam) {
+                document.getElementById('camName').value = "";
+                document.getElementById('camSource').value = "";
+                document.getElementById('taskList').innerHTML = '<p class="text-slate-500 text-[10px] italic p-4">Kamera bulunamadı. Lütfen yeni bir kamera ekleyin.</p>';
+                document.getElementById('activeTaskLabel').innerText = "Aktif Düzenleme: Yok";
+                img.src = "";
+                return;
+            }
 
             document.getElementById('camName').value = cam.name || "";
             document.getElementById('camSource').value = cam.source || "";
             
-            // Uyarıyı göster/gizle
             const warning = document.getElementById('noTaskWarning');
             if (currentTaskId !== null) {
                 warning.style.opacity = '0';
-                setTimeout(() => warning.style.display = 'none', 500);
+                warning.style.pointerEvents = 'none';
             } else {
-                warning.style.display = 'flex';
-                setTimeout(() => warning.style.opacity = '1', 10);
+                warning.style.opacity = '1';
+                warning.style.pointerEvents = 'auto';
             }
             
-            // Task listesini oluştur
             const taskList = document.getElementById('taskList');
             taskList.innerHTML = '';
             
@@ -238,7 +301,7 @@
             
             cam.tasks.forEach((task, index) => {
                 const div = document.createElement('div');
-                div.className = `task-card glass p-5 rounded-2xl cursor-pointer ${currentTaskId === index ? 'active' : ''}`;
+                div.className = `task-card glass p-5 rounded-2xl cursor-pointer ${currentTaskId === index ? 'active border-blue-500/50' : 'border-transparent'}`;
                 div.onclick = () => { currentTaskId = index; updateUI(); };
                 
                 div.innerHTML = `
@@ -261,13 +324,30 @@
                 document.getElementById('activeTaskLabel').innerText = `Aktif Düzenleme: Yok (Bir bölge seçin)`;
             }
 
-            img.src = `/video_feed/${currentCamId}?t=` + Date.now();
+            img.src = cam.source ? `/video_feed/${currentCamId}?t=` + Date.now() : "";
             draw();
         }
 
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const cam = config.cameras[currentCamId];
+            
+            // Kamera görüntüsü yoksa kılavuz çiz
+            if (!img.src || img.src.includes('undefined') || img.complete === false || img.naturalWidth === 0) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+                ctx.lineWidth = 1;
+                for(let i=0; i<canvas.width; i+=canvas.width/10) {
+                    ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke();
+                }
+                for(let i=0; i<canvas.height; i+=canvas.height/10) {
+                    ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); ctx.stroke();
+                }
+                ctx.fillStyle = 'rgba(255,255,255,0.2)';
+                ctx.font = '10px Inter';
+                ctx.textAlign = 'center';
+                ctx.fillText("KAMERA YAYINI BEKLENİYOR - SİYAH EKRAN ÜZERİNE ÇİZEBİLİRSİNİZ", canvas.width/2, canvas.height/2);
+            }
+
             if (!cam || !cam.tasks) return;
 
             cam.tasks.forEach((task, index) => {
@@ -275,9 +355,9 @@
                 const points = task.roi || [];
                 if (points.length === 0) return;
 
-                ctx.lineWidth = isSelected ? 4 : 1;
-                ctx.strokeStyle = isSelected ? (COLORS[task.type] || '#3b82f6') : '#ffffff44';
-                ctx.fillStyle = isSelected ? ((COLORS[task.type] || '#3b82f6') + '22') : '#ffffff11';
+                ctx.lineWidth = isSelected ? 4 : 2;
+                ctx.strokeStyle = isSelected ? (COLORS[task.type] || '#3b82f6') : 'rgba(255,255,255,0.3)';
+                ctx.fillStyle = isSelected ? ((COLORS[task.type] || '#3b82f6') + '33') : 'rgba(255,255,255,0.1)';
                 
                 ctx.beginPath();
                 const startX = (points[0][0] / 800) * canvas.width;
@@ -287,12 +367,17 @@
                 points.forEach((p, i) => {
                     const px = (p[0] / 800) * canvas.width;
                     const py = (p[1] / 450) * canvas.height;
+                    
+                    // Noktaları çiz (sadece seçili olan için daha belirgin)
                     if (isSelected) {
                         ctx.save();
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = ctx.strokeStyle;
                         ctx.fillStyle = ctx.strokeStyle;
-                        ctx.fillRect(px - 5, py - 5, 10, 10);
+                        ctx.fillRect(px - 6, py - 6, 12, 12);
                         ctx.restore();
                     }
+                    
                     if (i > 0) ctx.lineTo(px, py);
                 });
 
@@ -304,6 +389,7 @@
 
         function resizeCanvas() {
             const container = document.getElementById('canvasContainer');
+            if (!container) return;
             canvas.width = container.clientWidth;
             canvas.height = container.clientHeight;
             draw();
@@ -314,7 +400,7 @@
         canvas.addEventListener('mousedown', (e) => {
             if (currentTaskId === null) return;
             const cam = config.cameras[currentCamId];
-            if (!cam.tasks[currentTaskId]) return;
+            if (!cam || !cam.tasks[currentTaskId]) return;
 
             const rect = canvas.getBoundingClientRect();
             const x = Math.round(((e.clientX - rect.left) / canvas.width) * 800);
@@ -338,7 +424,25 @@
             draw();
         };
 
+        document.getElementById('addCam').addEventListener('click', () => {
+            const ids = Object.keys(config.cameras).map(Number);
+            const nextId = ids.length > 0 ? Math.max(...ids) + 1 : 1;
+            config.cameras[nextId] = {
+                name: `Kamera ${nextId}`,
+                source: "",
+                tasks: []
+            };
+            currentCamId = nextId.toString();
+            currentTaskId = null;
+            renderCamList();
+            updateUI();
+            
+            document.getElementById('camName').focus();
+            document.getElementById('camName').select();
+        });
+
         document.getElementById('addTask').addEventListener('click', () => {
+            if (!currentCamId || !config.cameras[currentCamId]) return;
             if (!config.cameras[currentCamId].tasks) config.cameras[currentCamId].tasks = [];
             config.cameras[currentCamId].tasks.push({ type: 'wrong_way', roi: [] });
             currentTaskId = config.cameras[currentCamId].tasks.length - 1;
@@ -346,69 +450,50 @@
         });
 
         document.getElementById('clearROI').addEventListener('click', () => {
-            if (currentTaskId !== null) {
+            if (currentTaskId !== null && config.cameras[currentCamId]) {
                 config.cameras[currentCamId].tasks[currentTaskId].roi = [];
                 draw();
             }
         });
 
-        document.getElementById('camSelect').addEventListener('change', (e) => {
-            currentCamId = e.target.value;
-            currentTaskId = null;
-            updateUI();
-        });
-
         document.getElementById('saveConfig').addEventListener('click', async () => {
-            config.cameras[currentCamId].name = document.getElementById('camName').value;
-            config.cameras[currentCamId].source = document.getElementById('camSource').value;
             statusEl.innerText = "TÜM AYARLAR KAYDEDİLİYOR...";
-            try {
-                const res = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(config)
-                });
-                if (res.ok) {
-                    statusEl.innerText = "BAŞARIYLA KAYDEDİLDİ";
-                    statusEl.className = "text-[10px] font-black bg-green-600/20 px-4 py-2 rounded-full text-green-500 border border-green-500/20";
-                    setTimeout(() => {
-                        statusEl.innerText = "HAZIR";
-                        statusEl.className = "text-[10px] font-black bg-slate-900 px-4 py-2 rounded-full text-slate-500 border border-white/5";
-                    }, 2000);
-                }
-            } catch (e) { statusEl.innerText = "HATA!"; }
+            await saveAllConfigToServer();
+            statusEl.innerText = "BAŞARIYLA KAYDEDİLDİ";
+            statusEl.className = "text-[10px] font-black bg-green-600/20 px-4 py-2 rounded-full text-green-500 border border-green-500/20";
+            setTimeout(() => {
+                statusEl.innerText = "HAZIR";
+                statusEl.className = "text-[10px] font-black bg-slate-900 px-4 py-2 rounded-full text-slate-500 border border-white/5";
+            }, 2000);
         });
 
         document.getElementById('saveCamOnly').addEventListener('click', async () => {
-            config.cameras[currentCamId].name = document.getElementById('camName').value;
-            config.cameras[currentCamId].source = document.getElementById('camSource').value;
-            statusEl.innerText = "KAMERA SİSTEME TANITILIYOR...";
+            statusEl.innerText = "YAYIN BAŞLATILIYOR...";
             try {
-                const res = await fetch('/api/config', {
+                // Önce mevcut halini kaydet
+                await saveAllConfigToServer();
+                
+                // Sonra motoru başlat/güncelle
+                const res = await fetch('/api/start_camera', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(config)
+                    body: JSON.stringify({ camera_id: currentCamId })
                 });
+                
+                const result = await res.json();
                 if (res.ok) {
-                    statusEl.innerText = "YAYIN BAŞLATILDI - GÖRÜNTÜ BEKLENİYOR...";
-                    setTimeout(async () => {
-                        await fetchConfig(); // Sunucudan güncel durumu çek ve motoru tetikle
-                    }, 1500);
+                    statusEl.innerText = "YAYIN AKTİF";
+                    statusEl.className = "text-[10px] font-black bg-green-600/20 px-4 py-2 rounded-full text-green-500 border border-green-500/20";
+                    setTimeout(() => updateUI(), 500);
+                } else {
+                    statusEl.innerText = "HATA: " + (result.message || "Bilinmiyor");
+                    statusEl.className = "text-[10px] font-black bg-red-600/20 px-4 py-2 rounded-full text-red-500 border border-red-500/20";
                 }
-            } catch (e) { statusEl.innerText = "HATA!"; }
-        });
-
-        document.getElementById('addCam').addEventListener('click', () => {
-            const camIds = Object.keys(config.cameras).map(Number);
-            const nextId = camIds.length > 0 ? Math.max(...camIds) + 1 : 1;
-            config.cameras[nextId] = {
-                name: `Yeni Kamera ${nextId}`,
-                source: "",
-                tasks: []
-            };
-            currentCamId = nextId.toString();
-            renderCamList();
-            updateUI();
+            } catch (e) { 
+                statusEl.innerText = "BAĞLANTI HATASI!"; 
+                statusEl.className = "text-[10px] font-black bg-red-600/20 px-4 py-2 rounded-full text-red-500 border border-red-500/20";
+                console.error(e);
+            }
         });
 
         fetchConfig();
