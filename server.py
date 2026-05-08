@@ -15,28 +15,35 @@ from queue import Queue
 from flask import Flask, Response, jsonify, send_from_directory, request
 from flask_cors import CORS
 from ultralytics import YOLO
-from core.pedestrian_engine import PedestrianEngine
-from core.mailer import send_violation_email
-from core.speed_engine import SpeedEngine
 from core.async_camera import SmartCamera
-from config import get_source
 import ai_config
 
 app = Flask(__name__, static_folder='dashboard/dist', static_url_path='/')
 CORS(app)
 
-# --- ANA SAYFA (REACT DASHBOARD) ---
 @app.route('/')
-def index():
-    return send_from_directory(app.static_folder, 'index.html')
+def index(): return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/settings')
+def settings(): return send_from_directory(app.static_folder, 'settings.html')
 
 @app.route('/assets/<path:path>')
-def send_assets(path):
-    return send_from_directory(os.path.join(app.static_folder, 'assets'), path)
+def send_assets(path): return send_from_directory(os.path.join(app.static_folder, 'assets'), path)
 
 VIOLATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ihlal_kayitlari")
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "violations.db")
 os.makedirs(VIOLATIONS_DIR, exist_ok=True)
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_config.json")
+
+def load_runtime_config():
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"cameras": {}}
+
+def save_runtime_config(config):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
 
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=20); cursor = conn.cursor()
@@ -46,225 +53,156 @@ def init_db():
 
 init_db()
 sse_clients, cameras = [], {}
-
-# Kameralar arası ortak ihlal kaydı: {track_id: son_ihlal_zamani}
-# Aynı kişi hem hız hem yaya koridorunda tespit edilirse tekrar loglanmaz.
 shared_violation_log = {}
-shared_violation_lock = Lock()  # Thread-safe erişim için
+shared_violation_lock = Lock()
 
-def cleanup_old_records(days=7):
-    """Eski veritabanı kayıtlarını ve bunlara bağlı fiziksel dosyaları temizler."""
-    print(f"[*] Temizlik başlatıldı: {days} günden eski kayıtlar siliniyor...")
-    try:
-        cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Silinecek kayıtların dosya yollarını al
-        cursor.execute("SELECT image_path, video_path FROM violations WHERE timestamp < ?", (cutoff_date,))
-        old_records = cursor.fetchall()
-        
-        deleted_count = 0
-        for record in old_records:
-            # Görseli sil
-            if record['image_path']:
-                img_p = os.path.join(VIOLATIONS_DIR, record['image_path'])
-                if os.path.exists(img_p):
-                    os.remove(img_p)
-            
-            # Videoyu sil (varsa)
-            if record['video_path']:
-                vid_p = os.path.join(VIOLATIONS_DIR, record['video_path'])
-                if os.path.exists(vid_p):
-                    os.remove(vid_p)
-            deleted_count += 1
-            
-        # DB kayıtlarını sil
-        cursor.execute("DELETE FROM violations WHERE timestamp < ?", (cutoff_date,))
-        conn.commit()
-        conn.close()
-        print(f"[+] Temizlik tamamlandı. {deleted_count} eski kayıt ve dosya silindi.")
-    except Exception as e:
-        print(f"[!] Temizlik hatası: {e}")
-
-def maintenance_loop():
-    """Arka planda periyodik temizlik yapar (Her 1 saatte bir kontrol)."""
-    while True:
-        cleanup_old_records(days=7) # Haftalık temizlik
-        time.sleep(3600) # 1 saat bekle
-
-class CameraEngine:
-    def __init__(self, cam_id, name, source, model=None):
+class HybridEngine:
+    def __init__(self, cam_id, name, source, tasks=[]):
         self.cam_id, self.name, self.source = cam_id, name, source
-        self.cam_id, self.name = cam_id, name
-        self.source, self.name, self.roi_polygon, self.on_violation = source, name, [(383, 32), (92, 276), (630, 273), (402, 31)], None
+        self.tasks = tasks 
         self.cap = SmartCamera(source, simulate_live=False)
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, 170 * 1000) # 2:50'den başlat
         self.cap.start()
-        self.model = None; self.model_name = ai_config.MODEL_NAME
-        self.ref_width, self.ref_height = 1920, 1080
-        self.roi_scaled = False; self.middle_y = None
-        self.prev_positions = {}
+        
+        self.model = YOLO(ai_config.MODEL_NAME)
+        self.ref_width, self.ref_height = 800, 450
         self.frame_count = 0
+        self.middle_y = None
         
-        # ⭐ Histerezis ve Karar Birikimi (M-out-of-N)
-        self.violation_buffer = {} # ID: [is_in_roi, is_in_roi, ...] (son 15 kare)
+        # Core State
+        self.prev_positions = {} 
+        self.violation_buffer = {} 
+        self.entry_times = {} 
+        self.stationary_counters = {}
+        self.alarm_ledger = []
         
-        # ⭐ Mekansal Soğuma (Alarm Ledger) - Global veya Sınıf bazlı
-        self.alarm_ledger = [] # [(timestamp, cx, cy, type), ...]
-        self.spatial_threshold = 150 # piksel (aynı bölge sayılması için mesafe)
-        self.temporal_threshold = 15 # saniye (aynı bölgede alarm basmama süresi)
-        
-        self.shared_violation_log = {}; self.shared_violation_lock = threading.Lock()
-        self.violation_cooldown_sec = 300 # ⭐ 5 Dakika soğuma
-        self._recent_violation_positions = [] # (cx, cy, timestamp)
-        self.position_cooldown_radius = 150    # ⭐ 150 piksel (Geri döndük)
-        self.position_cooldown_sec = 10         # ⭐ 10 saniye (Konum bazlı)
-        # Bellek temizliği
-        self._last_cleanup = time.time()
-        self._cleanup_interval = 60
+        self.current_frame = None
         self.on_violation = None
-        self.roi_polygon = np.array([(383, 32), (92, 276), (630, 273), (402, 31)], dtype=np.int32)
-        self.ref_width, self.ref_height, self.roi_scaled, self.middle_y = 800, 450, False, None
 
-    def _is_position_in_cooldown(self, cx, cy):
+    def update_config(self, cam_data):
+        new_source = cam_data.get("source")
+        if new_source and new_source != self.source:
+            self.source = new_source
+            self.cap.release(); self.cap = SmartCamera(new_source, simulate_live=False); self.cap.start()
+        self.tasks = cam_data.get("tasks", [])
+        self.prev_positions.clear(); self.violation_buffer.clear(); self.entry_times.clear()
+
+    def log_violation(self, vehicle_id, frame, box, v_type):
         now = time.time()
-        self._recent_violation_positions = [
-            (x, y, t) for x, y, t in self._recent_violation_positions
-            if now - t < self.position_cooldown_sec
-        ]
-        for x, y, t in self._recent_violation_positions:
-            if math.sqrt((cx - x) ** 2 + (cy - y) ** 2) < self.position_cooldown_radius:
-                return True
-        return False
-
-    def _register_violation_position(self, cx, cy):
-        self._recent_violation_positions.append((cx, cy, time.time()))
-
-    def _is_spatial_duplicate(self, cx, cy, v_type):
-        """⭐ Mekansal Soğuma: Aynı bölgede yakın zamanda alarm verildi mi?"""
-        now = time.time()
-        # Eski kayıtları temizle (30 saniyeden eski olanlar)
-        self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
+        cx, cy = int((box[0]+box[2])/2), int(box[3])
         
+        self.alarm_ledger = [a for a in self.alarm_ledger if (now - a[0]) < 30]
         v_cat = v_type.split('(')[0].strip()
         for ts, ax, ay, atype in self.alarm_ledger:
-            a_cat = atype.split('(')[0].strip()
-            if a_cat == v_cat:
-                dist = ((cx - ax)**2 + (cy - ay)**2)**0.5
-                if dist < self.spatial_threshold and (now - ts) < self.temporal_threshold:
-                    return True
-        return False
+            if atype.split('(')[0].strip() == v_cat:
+                if math.sqrt((cx-ax)**2 + (cy-ay)**2) < 150 and (now - ts) < 15: return
 
-    def log_violation(self, vehicle_id, frame, box=None, violation_type="Ters Yön İhlali"):
-        current_time = time.time()
-        
-        if box is not None:
-            cx, cy = int((box[0] + box[2]) / 2), int(box[3]) # BOTTOM-CENTER
-            
-            # 1. Mekansal Soğuma Kontrolü (ID bağımsız koruma)
-            if self._is_spatial_duplicate(cx, cy, violation_type):
-                return
-                
-        v_cat = violation_type.split('(')[0].strip()
-        # 2. Thread-safe ID + Kategori bazlı kontrol
-        with self.shared_violation_lock:
+        with shared_violation_lock:
             key = f"{vehicle_id}_{v_cat}"
-            last_time = self.shared_violation_log.get(key, 0)
-            if (current_time - last_time) < self.violation_cooldown_sec:
-                return
-            self.shared_violation_log[key] = current_time
-            
-        # ⭐ Ledger'a kaydet
-        if box is not None:
-            self.alarm_ledger.append((current_time, cx, cy, violation_type))
+            if (now - shared_violation_log.get(key, 0)) < 300: return
+            shared_violation_log[key] = now
+
+        self.alarm_ledger.append((now, cx, cy, v_type))
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        img_name = f"ters_{datetime.now().strftime('%H%M%S')}_{random.randint(1000,9999)}.jpg"
+        img_name = f"violation_{datetime.now().strftime('%H%M%S')}_{random.randint(1000,9999)}.jpg"
         img_path = os.path.join(VIOLATIONS_DIR, img_name)
+        
         evidence = frame.copy()
-        if box is not None: cv2.rectangle(evidence, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 0, 255), 10)
-        cv2.rectangle(evidence, (0, 0), (evidence.shape[1], 100), (0, 0, 0), -1)
-        cv2.putText(evidence, f"IHLAL: {violation_type.upper()}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 4)
-        cv2.putText(evidence, f"TARIH: {ts_str} | ID: {vehicle_id}", (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.rectangle(evidence, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 0, 255), 4)
+        cv2.rectangle(evidence, (0, 0), (evidence.shape[1], 80), (0, 0, 0), -1)
+        cv2.putText(evidence, f"IHLAL: {v_type.upper()}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
         cv2.imwrite(img_path, evidence)
-        conn = sqlite3.connect(DB_PATH, timeout=20); cursor = conn.cursor()
+        
+        conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
         cursor.execute('INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path) VALUES (?, ?, ?, ?, ?, ?)',
-                       (int(vehicle_id), self.name, violation_type, ts_str, img_name, ""))
+                       (int(vehicle_id), self.name, v_type, ts_str, img_name, ""))
         conn.commit(); last_id = cursor.lastrowid; conn.close()
-        # 4️⃣ E-posta bildirimi
-        send_violation_email(self.name, violation_type, int(vehicle_id), ts_str, img_path)
-        if self.on_violation: self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": violation_type, "time": ts_str, "img": img_name})
+        
+        if self.on_violation:
+            self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": v_type, "time": ts_str, "img": img_name})
 
     def process(self):
         while True:
             try:
-                if self.model is None and hasattr(self, 'model_name') and self.model_name: self.model = YOLO(self.model_name); self.model_name = None
                 if not self.cap.isOpened(): time.sleep(1); continue
                 ret, frame = self.cap.read()
                 if not ret: time.sleep(0.01); continue
                 
                 h, w = frame.shape[:2]
-                if not self.roi_scaled:
-                    sx, sy = w / self.ref_width, h / self.ref_height
-                    self.roi_polygon = np.array([(int(px*sx), int(py*sy)) for px, py in self.roi_polygon], dtype=np.int32); self.roi_scaled = True
+                sx, sy = w / self.ref_width, h / self.ref_height
                 if self.middle_y is None: self.middle_y = int(h * 0.5)
                 
                 display_frame = frame.copy()
-                cv2.polylines(display_frame, [self.roi_polygon], True, (255, 255, 0), 2); cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 3)
-                
                 self.frame_count += 1
-                should_process = not ai_config.ENABLE_FRAME_SKIPPING or (self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0)
                 
-                if self.model and should_process: 
-                    results = self.model.track(frame, persist=True, classes=[2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, tracker="botsort_custom.yaml", verbose=False)
+                if self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0:
+                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, verbose=False)
                     active_ids = []
                     if results and results[0].boxes.id is not None:
-                        boxes, ids = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int)
+                        boxes, ids, clss = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int), results[0].boxes.cls.cpu().numpy().astype(int)
                         active_ids = ids
-                        for box, id in zip(boxes, ids):
-                            cx, cy = int((box[0]+box[2])/2), int(box[3]) # ⭐ BOTTOM-CENTER
+                        
+                        for box, id, cls in zip(boxes, ids, clss):
+                            cx, cy = int((box[0]+box[2])/2), int(box[3])
                             
-                            # 1️⃣ ROI Kontrolü (Bottom-Center üzerinden)
-                            is_in_roi = cv2.pointPolygonTest(self.roi_polygon, (float(cx), float(cy)), False) >= 0
+                            # Hareketsiz Nesne Kontrolü
+                            is_moving = True
+                            if id in self.prev_positions:
+                                px, py = self.prev_positions[id]
+                                if math.sqrt((cx-px)**2 + (cy-py)**2) < ai_config.STATIONARY_PIXEL_LIMIT:
+                                    self.stationary_counters[id] = self.stationary_counters.get(id, 0) + 1
+                                else:
+                                    self.stationary_counters[id] = 0
+                                if self.stationary_counters.get(id, 0) >= ai_config.STATIONARY_FRAME_LIMIT: is_moving = False
                             
-                            # 2️⃣ Histerezis (Karar Birikimi)
-                            if id not in self.violation_buffer: self.violation_buffer[id] = []
-                            self.violation_buffer[id].append(is_in_roi)
-                            if len(self.violation_buffer[id]) > 8: self.violation_buffer[id].pop(0)
-                            
-                            # Son 8 karenin en az 3'ünde ROI içindeyse "İhlal Durumu" onaylanır
-                            roi_confirmed = sum(self.violation_buffer[id]) >= 3
-                            
-                            if not is_in_roi: 
-                                self.prev_positions.pop(id, None); continue
+                            for idx, task in enumerate(self.tasks):
+                                roi = np.array([(int(px*sx), int(py*sy)) for px, py in task['roi']], dtype=np.int32)
+                                is_in_roi = cv2.pointPolygonTest(roi, (float(cx), float(cy)), False) >= 0
                                 
-                            # 3️⃣ İhlal Kararı (Hız Koridoru ile aynı kararlı yapı)
-                            if id in self.prev_positions and roi_confirmed:
-                                p_y = self.prev_positions[id]
-                                # Ters Yön: Aşağıdan Yukarı (Y değeri azalıyor)
-                                if p_y > self.middle_y and cy <= self.middle_y:
-                                    self.log_violation(id, frame, box)
+                                # Histerezis (Karar Birikimi)
+                                if id not in self.violation_buffer: self.violation_buffer[id] = {}
+                                if idx not in self.violation_buffer[id]: self.violation_buffer[id][idx] = []
+                                self.violation_buffer[id][idx].append(is_in_roi)
+                                if len(self.violation_buffer[id][idx]) > 8: self.violation_buffer[id][idx].pop(0)
+                                roi_confirmed = sum(self.violation_buffer[id][idx]) >= 3
                                 
-                            self.prev_positions[id] = cy
-                            # Çizim (ID ve Durum)
-                            label = f"ID: {id}"
-                            color = (0, 255, 255) if roi_confirmed else (0, 255, 0) # SARI = Onaylı, YEŞİL = Takip
+                                if is_in_roi and roi_confirmed and is_moving:
+                                    t_type = task['type']
+                                    if t_type == "wrong_way":
+                                        if id in self.prev_positions:
+                                            px, py = self.prev_positions[id]
+                                            if py > self.middle_y and cy <= self.middle_y:
+                                                self.log_violation(id, frame, box, "Ters Yön")
+                                                
+                                    elif t_type == "pedestrian" and cls == 0:
+                                        self.log_violation(id, frame, box, "Yaya İhlali")
+                                        
+                                    elif t_type == "speed" and cls in [2,3,5,7]:
+                                        if id not in self.entry_times: self.entry_times[id] = {}
+                                        if idx not in self.entry_times[id]: self.entry_times[id][idx] = time.time()
                                 
-                            cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
-                            cv2.putText(display_frame, label, (int(box[0]), int(box[1]) - 10), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                    
-                    # Buffer Temizliği (Artık görünmeyen ID'ler)
-                    for rid in list(self.violation_buffer.keys()):
-                        if rid not in active_ids: del self.violation_buffer[rid]
+                                elif not is_in_roi and id in self.entry_times and idx in self.entry_times[id]:
+                                    # Hız Hesaplama (Çıkışta)
+                                    duration = time.time() - self.entry_times[id][idx]
+                                    if duration > 0.5:
+                                        speed = (ai_config.SPEED_ROI_DISTANCE / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
+                                        if speed > ai_config.MIN_SPEED_LIMIT:
+                                            self.log_violation(id, frame, box, f"Hız İhlali ({int(speed)} km/h)")
+                                    del self.entry_times[id][idx]
+                                
+                                # Çizim
+                                color = (0, 255, 0) if not is_in_roi else (0, 0, 255)
+                                cv2.polylines(display_frame, [roi], True, color, 2)
+                                
+                            self.prev_positions[id] = (cx, cy)
+                            label = f"ID: {id}" + (" (SABIT)" if not is_moving else "")
+                            cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 255, 0), 2)
+                            cv2.putText(display_frame, label, (int(box[0]), int(box[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 
-                # Görüntüyü güncelle
                 preview = cv2.resize(display_frame, (800, 450)); _, buffer = cv2.imencode('.jpg', preview); self.current_frame = buffer.tobytes()
                 time.sleep(0.01)
             except Exception as e:
-                print(f"CameraEngine Hatası: {e}")
-                time.sleep(1)
+                print(f"Engine Hatası: {e}"); time.sleep(1)
+
     def get_frame(self): return self.current_frame
 
 def notify(data):
@@ -272,26 +210,24 @@ def notify(data):
     for q in sse_clients: q.put(msg)
 
 def main():
-    init_db()
-    
-    source1 = get_source("ANA_KORIDOR")
-    source2 = get_source("GUVENSIZ_BOLGE")
-    source3 = get_source("HIZ_KORIDORU")
+    config = load_runtime_config()
+    for cam_id_str, cam_data in config.get("cameras", {}).items():
+        cam_id = int(cam_id_str)
+        engine = HybridEngine(cam_id, cam_data['name'], cam_data['source'], cam_data.get('tasks', []))
+        engine.on_violation = notify
+        cameras[cam_id] = engine
+        threading.Thread(target=engine.process, daemon=True).start()
 
-    engine1 = CameraEngine(1, "1. Koridor", source1)
-    engine2 = PedestrianEngine(2, "2. Koridor", source2)
-    engine3 = SpeedEngine(3, "3. Koridor", source3)
-    # Hız ve yaya koridorları aynı ortak ihlal kaydını ve lock'ı paylaşır
-    engine2.shared_violation_log = shared_violation_log
-    engine2.shared_violation_lock = shared_violation_lock
-    engine3.shared_violation_log = shared_violation_log
-    engine3.shared_violation_lock = shared_violation_lock
-    engine1.on_violation = engine2.on_violation = engine3.on_violation = notify
-    cameras[1], cameras[2], cameras[3] = engine1, engine2, engine3
-    for e in cameras.values(): threading.Thread(target=e.process, daemon=True).start()
-    
-    # Bakım thread'ini başlat (Temizlik)
-    threading.Thread(target=maintenance_loop, daemon=True).start()
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    if request.method == 'POST':
+        new_config = request.json
+        save_runtime_config(new_config)
+        for cid_str, cdata in new_config.get("cameras", {}).items():
+            cid = int(cid_str)
+            if cid in cameras: cameras[cid].update_config(cdata)
+        return jsonify({"status": "success"})
+    return jsonify(load_runtime_config())
 
 @app.route('/stats')
 def stats():
@@ -312,16 +248,6 @@ def video_feed(cam_id):
             time.sleep(0.03)
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/vehicle_stream')
-def vs(): return video_feed(1)
-@app.route('/pedestrian_stream')
-def ps(): return video_feed(2)
-@app.route('/speed_stream')
-def ss(): return video_feed(3)
-
-@app.route('/screenshots/<path:filename>')
-def get_screenshot(filename): return send_from_directory(VIOLATIONS_DIR, filename)
-
 @app.route('/stream')
 def stream():
     def event_stream():
@@ -338,17 +264,17 @@ def delete_violation(id):
 @app.route('/delete_multiple', methods=['POST'])
 def delete_multiple():
     ids = request.json.get('ids', [])
-    if not ids: return jsonify({"status": "error", "message": "No IDs provided"}), 400
     conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
     cursor.execute(f'DELETE FROM violations WHERE id IN ({",".join(["?"]*len(ids))})', ids)
-    conn.commit(); conn.close()
-    return jsonify({"status": "success"})
+    conn.commit(); conn.close(); return jsonify({"status": "success"})
 
 @app.route('/clear_all_violations', methods=['DELETE'])
 def clear_all_violations():
-    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor(); cursor.execute('DELETE FROM violations'); conn.commit(); conn.close()
-    return jsonify({"status": "success"})
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor(); cursor.execute('DELETE FROM violations'); conn.commit(); conn.close(); return jsonify({"status": "success"})
+
+@app.route('/screenshots/<path:filename>')
+def get_screenshot(filename): return send_from_directory(VIOLATIONS_DIR, filename)
 
 if __name__ == '__main__':
-    main()  # main içinde zaten engine threadleri başlatılıyor
+    main()
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

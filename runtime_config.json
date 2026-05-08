@@ -1,0 +1,188 @@
+{
+    "cameras": {
+        "1": {
+            "name": "1. Koridor",
+            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": [
+                {
+                    "roi": [
+                        [
+                            383,
+                            32
+                        ],
+                        [
+                            92,
+                            276
+                        ],
+                        [
+                            630,
+                            273
+                        ],
+                        [
+                            402,
+                            31
+                        ]
+                    ],
+                    "type": "wrong_way"
+                }
+            ]
+        },
+        "2": {
+            "name": "2. Koridor",
+            "source": "rtsp://admin:sifre123@192.168.1.101:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": [
+                {
+                    "roi": [
+                        [
+                            38,
+                            446
+                        ],
+                        [
+                            171,
+                            346
+                        ],
+                        [
+                            289,
+                            258
+                        ],
+                        [
+                            372,
+                            199
+                        ],
+                        [
+                            442,
+                            148
+                        ],
+                        [
+                            485,
+                            124
+                        ],
+                        [
+                            521,
+                            96
+                        ],
+                        [
+                            533,
+                            86
+                        ],
+                        [
+                            576,
+                            91
+                        ],
+                        [
+                            552,
+                            192
+                        ],
+                        [
+                            502,
+                            329
+                        ],
+                        [
+                            456,
+                            448
+                        ]
+                    ],
+                    "type": "pedestrian"
+                }
+            ]
+        },
+        "3": {
+            "name": "3. Koridor",
+            "source": "rtsp://admin:sifre123@192.168.1.102:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": [
+                {
+                    "roi": [
+                        [
+                            491,
+                            130
+                        ],
+                        [
+                            552,
+                            140
+                        ],
+                        [
+                            413,
+                            448
+                        ],
+                        [
+                            4,
+                            431
+                        ]
+                    ],
+                    "type": "speed"
+                }
+            ]
+        },
+        "4": {
+            "name": "4. Koridor (Örnek Hibrit)",
+            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": [
+                {
+                    "roi": [
+                        [
+                            341,
+                            99
+                        ],
+                        [
+                            474,
+                            177
+                        ],
+                        [
+                            232,
+                            309
+                        ],
+                        [
+                            70,
+                            277
+                        ]
+                    ],
+                    "type": "speed"
+                },
+                {
+                    "roi": [
+                        [
+                            100,
+                            100
+                        ],
+                        [
+                            200,
+                            100
+                        ],
+                        [
+                            200,
+                            200
+                        ],
+                        [
+                            100,
+                            200
+                        ]
+                    ],
+                    "type": "pedestrian"
+                }
+            ]
+        },
+        "5": {
+            "name": "Yeni Kamera 5",
+            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": [
+                {
+                    "type": "pedestrian",
+                    "roi": [
+                        [
+                            335,
+                            113
+                        ],
+                        [
+                            502,
+                            124
+                        ],
+                        [
+                            313,
+                            394
+                        ]
+                    ]
+                }
+            ]
+        }
+    }
+}

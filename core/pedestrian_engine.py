@@ -14,7 +14,7 @@ import ai_config
 import json
 
 class PedestrianEngine:
-    def __init__(self, camera_id, camera_name, source, model=None):
+    def __init__(self, camera_id, camera_name, source, roi=None, model=None):
         self.camera_id, self.camera_name, self.source = camera_id, camera_name, source
         self.model_name = ai_config.MODEL_NAME if not model else None
         self.model = model
@@ -24,7 +24,7 @@ class PedestrianEngine:
         # ⭐ Mekansal Soğuma (Alarm Ledger)
         self.alarm_ledger = []
         self.spatial_threshold = 150 # piksel
-        self.temporal_threshold = 15 # saniye (yayalar daha yavaş hareket eder)
+        self.temporal_threshold = 15 # saniye
         
         self.running = True
         self.current_frame = None
@@ -32,31 +32,39 @@ class PedestrianEngine:
         self.conf_threshold = ai_config.YOLO_CONF_THRESHOLD
         
         # ROI Alanı
-        self.roi_polygon = np.array([(38, 446), (171, 346), (289, 258), (372, 199), (442, 148), (485, 124), (521, 96), (533, 86), (576, 91), (552, 192), (502, 329), (456, 448)], dtype=np.int32)
+        self.roi_polygon = np.array(roi if roi else [(38, 446), (171, 346), (289, 258), (372, 199), (442, 148), (485, 124), (521, 96), (533, 86), (576, 91), (552, 192), (502, 329), (456, 448)], dtype=np.int32)
         self.ref_width, self.ref_height, self.roi_scaled = 800, 450, False
         self.mask_polygon = np.array([[91, 980], [1094, 295], [1130, 297], [1170, 272], [1160, 265], [1260, 208], [1275, 198], [1271, 104], [1124, 84], [927, 67], [798, 54], [631, 57], [477, 62], [282, 81], [114, 107], [10, 134], [11, 718], [82, 971]], dtype=np.int32)
         
-        # Özel maske yükle (varsa)
-        self.mask_path = "pedestrian_mask.json"
-        if os.path.exists(self.mask_path):
-            try:
-                with open(self.mask_path, "r") as f:
-                    custom_points = json.load(f)
-                    if custom_points:
-                        self.mask_polygon = np.array(custom_points, dtype=np.int32)
-                        print(f"[YAYA] Özel maske yüklendi: {len(custom_points)} nokta.")
-            except Exception as e:
-                print(f"[YAYA] Maske yüklenirken hata: {e}")
+        self.cap = None # process içinde başlatılır
         
-        # ID bazlı + kameralar arası cooldown (server.py inject eder)
-        self.violation_cooldown_sec = 300 # ⭐ 5 dakika ID bazlı soğuma
-        self.shared_violation_log = {}   # Varsayılan boş — server.py inject eder
-        self.shared_violation_lock = Lock()  # Varsayılan lock — server.py inject eder
+        # ID bazlı + kameralar arası cooldown
+        self.violation_cooldown_sec = 300 
+        self.shared_violation_log = {}   
+        self.shared_violation_lock = Lock()  
         
         # ⭐ Konum bazlı cooldown
-        self._recent_violation_positions = []  # [(cx, cy, timestamp)]
-        self.position_cooldown_radius = 150    # ⭐ 150 piksel
-        self.position_cooldown_sec = 10         # ⭐ 10 saniye (Konum bazlı)
+        self._recent_violation_positions = [] 
+        self.position_cooldown_radius = 150    
+        self.position_cooldown_sec = 10         
+        self.on_violation = None
+
+    def update_config(self, cam_data):
+        new_source = cam_data.get("source")
+        new_roi = cam_data.get("roi")
+        
+        if new_source and new_source != self.source:
+            print(f"[YAYA] {self.camera_name} Kaynak güncelleniyor...")
+            self.source = new_source
+            if self.cap:
+                self.cap.release()
+                self.cap = SmartCamera(new_source, simulate_live=False)
+                self.cap.start()
+            
+        if new_roi:
+            print(f"[YAYA] {self.camera_name} ROI güncelleniyor...")
+            self.roi_polygon = np.array(new_roi, dtype=np.int32)
+            self.roi_scaled = False
         
         # Bellek temizliği
         self._last_cleanup = time.time()

@@ -14,12 +14,11 @@ from .mailer import send_violation_email
 import ai_config
 
 class SpeedEngine:
-    def __init__(self, cam_id, name, source, model=None):
+    def __init__(self, cam_id, name, source, roi=None, model=None):
         self.cam_id, self.name, self.source = cam_id, name, source
         self.model_name = ai_config.MODEL_NAME if not model else None
         self.model = model
         self.cap = SmartCamera(source, simulate_live=False)
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, 172 * 1000) # 2:52'den başlat
         self.cap.start()
         
         self.entry_times, self.track_history = {}, {}
@@ -32,31 +31,43 @@ class SpeedEngine:
         
         self.running = True
         self.current_frame = None
-        self.frame_count = 0  # ⭐ Frame atlama için
+        self.frame_count = 0  
         self.violators, self.vehicle_logged = set(), set()
         self.track_history, self.entry_times, self.prev_positions = {}, {}, {}
         
-        # ID bazlı + kameralar arası cooldown (server.py inject eder)
-        self.violation_cooldown_sec = 300  # ⭐ Aynı ID 5 dakika boyunca tekrar loglanmaz
-        self.shared_violation_log = {}   # Varsayılan boş — server.py inject eder
-        self.shared_violation_lock = Lock()  # Varsayılan lock — server.py inject eder
-        
-        # Bellek temizliği
-        self._last_cleanup = time.time()
-        self._cleanup_interval = 60  # saniye
+        # ID bazlı + kameralar arası cooldown
+        self.violation_cooldown_sec = 300  
+        self.shared_violation_log = {}   
+        self.shared_violation_lock = Lock()  
         
         # ⭐ Konum bazlı cooldown
-        self._recent_violation_positions = []  # [(cx, cy, timestamp)]
-        self.position_cooldown_radius = 150    # ⭐ 150 piksel
-        self.position_cooldown_sec = 10         # ⭐ 10 saniye
+        self._recent_violation_positions = [] 
+        self.position_cooldown_radius = 150    
+        self.position_cooldown_sec = 10         
         
         self.on_violation = None
         self.VIOLATIONS_DIR = "ihlal_kayitlari"
         self.DB_PATH = "violations.db"
         
-        self.ped_roi_polygon = np.array([(491, 130), (552, 140), (413, 448), (4, 431)], dtype=np.int32)
+        self.ped_roi_polygon = np.array(roi if roi else [(491, 130), (552, 140), (413, 448), (4, 431)], dtype=np.int32)
         self.roi_distance = ai_config.SPEED_ROI_DISTANCE
         self.roi_scaled, self.ref_width, self.ref_height, self.middle_y = False, 800, 450, None
+
+    def update_config(self, cam_data):
+        new_source = cam_data.get("source")
+        new_roi = cam_data.get("roi")
+        
+        if new_source and new_source != self.source:
+            print(f"[HIZ] {self.name} Kaynak güncelleniyor...")
+            self.source = new_source
+            self.cap.release()
+            self.cap = SmartCamera(new_source, simulate_live=False)
+            self.cap.start()
+            
+        if new_roi:
+            print(f"[HIZ] {self.name} ROI güncelleniyor...")
+            self.ped_roi_polygon = np.array(new_roi, dtype=np.int32)
+            self.roi_scaled = False
         
         # ⭐ Hareketsiz Nesne Filtresi
         self.stationary_counters = {}  # ID: frame_count

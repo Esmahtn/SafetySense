@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafetySense | Çoklu ROI Kalibrasyonu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        :root { --bg: #020617; --text: #f8fafc; --glass-bg: rgba(15, 23, 42, 0.8); --border: rgba(255,255,255,0.05); --input-bg: #0f172a; }
+        
+        body.light-mode { --bg: #f1f5f9; --text: #0f172a; --glass-bg: rgba(255, 255, 255, 0.7); --border: rgba(0,0,0,0.05); --input-bg: #ffffff; }
+
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg); color: var(--text); transition: background-color 0.5s ease, color 0.5s ease; }
+        .glass { background: var(--glass-bg); backdrop-filter: blur(12px); border: 1px solid var(--border); transition: all 0.5s ease; }
+        canvas { cursor: crosshair; touch-action: none; }
+        .task-card { transition: all 0.3s ease; border-left: 4px solid transparent; }
+        .task-card.active { background: rgba(59, 130, 246, 0.1); border-left-color: #3b82f6; }
+        
+        input, select { background-color: var(--input-bg) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
+        .light-mode h1, .light-mode h2 { color: #1e293b; }
+        .light-mode .text-slate-500 { color: #64748b; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-[1600px] mx-auto">
+        <header class="flex justify-between items-center mb-10">
+            <div class="flex items-center gap-4">
+                <div class="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/40">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield-alert"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                </div>
+                <div>
+                    <h1 class="text-3xl font-black tracking-tighter text-white uppercase italic transition-colors">SafetySense <span class="text-blue-500">PRO</span></h1>
+                    <p class="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Gelişmiş Çoklu ROI Kalibrasyon Merkezi</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <button id="themeToggle" class="w-12 h-12 glass rounded-2xl flex items-center justify-center hover:scale-110 transition-all text-blue-500">
+                    <svg id="sunIcon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+                    <svg id="moonIcon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+                </button>
+                <a href="/" class="px-6 py-3 glass hover:bg-white/10 rounded-2xl transition-all font-black text-xs uppercase tracking-widest">Paneli Aç</a>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10">
+            <!-- Sol Panel: Kamera ve Görevler -->
+            <div class="lg:col-span-4 space-y-8">
+                
+                <div class="glass p-8 rounded-[35px] space-y-6">
+                    <h2 class="text-xs font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
+                        <span class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                        KAMERA SEÇİMİ
+                    </h2>
+                    
+                    <div class="flex gap-4">
+                        <select id="camSelect" class="flex-1 bg-slate-900 border border-white/5 rounded-2xl p-4 text-sm focus:border-blue-500 outline-none transition-all">
+                            <!-- Dinamik dolacak -->
+                        </select>
+                        <button id="addCam" title="Yeni Kamera" class="w-14 h-14 bg-blue-600 hover:bg-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-900/20 transition-all font-black text-xl">+</button>
+                        <button id="deleteCam" title="Kamerayı Sil" class="w-14 h-14 bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white rounded-2xl flex items-center justify-center border border-red-900/10 transition-all font-black">✕</button>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-[10px] font-black text-slate-600 uppercase tracking-widest ml-1 mb-2">Kamera İsmi</label>
+                            <input type="text" id="camName" placeholder="Kamera Adı..." class="w-full bg-slate-900 border border-white/5 rounded-2xl p-4 text-sm text-white focus:border-blue-500 outline-none transition-all">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-black text-slate-600 uppercase tracking-widest ml-1 mb-2">Kamera Kaynağı (RTSP URL)</label>
+                            <input type="text" id="camSource" placeholder="rtsp://user:pass@ip:port/..." class="w-full bg-slate-900 border border-white/5 rounded-2xl p-4 text-xs font-mono text-blue-400 focus:border-blue-500 outline-none transition-all">
+                        </div>
+                        <button id="saveCamOnly" class="w-full py-4 bg-green-600 hover:bg-green-500 text-white font-black text-[10px] rounded-2xl transition-all uppercase tracking-widest shadow-lg shadow-green-900/20">
+                            1. ADIM: KAMERAYI SİSTEME KAYDET (YAYINI BAŞLAT)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- GÖREV LİSTESİ -->
+                <div class="glass p-8 rounded-[45px] space-y-6">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-xs font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-3">
+                            <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                            2. ADIM: TESPİT BÖLGELERİ (ROI)
+                        </h2>
+                        <button id="addTask" class="text-[10px] font-black bg-green-600/10 text-green-500 hover:bg-green-600 hover:text-white px-4 py-2 rounded-xl border border-green-900/20 transition-all">+ YENİ ALAN</button>
+                    </div>
+
+                    <div id="taskList" class="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                        <!-- Görevler buraya gelecek -->
+                    </div>
+
+                    <button id="saveConfig" class="w-full py-5 bg-blue-600 hover:bg-blue-500 text-white font-black text-sm rounded-3xl transition-all shadow-[0_0_40px_rgba(37,99,235,0.2)] uppercase tracking-widest">
+                        TÜM ROI AYARLARINI BİTİR VE KAYDET
+                    </button>
+                </div>
+            </div>
+
+            <!-- Sağ Panel: Görsel Kalibrasyon -->
+            <div class="lg:col-span-8 space-y-6">
+                <div class="glass p-6 rounded-[50px] relative overflow-hidden">
+                    <div class="flex justify-between items-center mb-6 px-4">
+                        <div>
+                            <h2 class="text-2xl font-black italic uppercase tracking-tighter">KALİBRASYON EKRANI</h2>
+                            <p id="activeTaskLabel" class="text-[10px] text-blue-500 font-bold uppercase tracking-widest mt-1">Aktif Düzenleme: Yok</p>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <span id="status" class="text-[10px] font-black bg-slate-900 px-4 py-2 rounded-full text-slate-500 border border-white/5">HAZIR</span>
+                            <button id="clearROI" class="text-[10px] font-black text-red-500 hover:underline">ROI TEMİZLE</button>
+                        </div>
+                    </div>
+
+                    <div id="canvasContainer" class="relative bg-black rounded-[40px] border border-white/5 aspect-video overflow-hidden shadow-2xl">
+                        <img id="streamPreview" src="" class="absolute inset-0 w-full h-full object-contain opacity-60" alt="Kamera Akışı">
+                        <canvas id="roiCanvas" class="absolute inset-0 w-full h-full"></canvas>
+                        
+                        <!-- Yönlendirme Uyarısı -->
+                        <div id="noTaskWarning" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50 transition-opacity duration-500">
+                            <div class="text-center p-8 glass rounded-3xl border-blue-500/30">
+                                <div class="w-16 h-16 bg-blue-600/20 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01"/><path d="M12 16v-4"/><path d="M12 8V4"/><path d="M3 3l18 18"/></svg>
+                                </div>
+                                <h3 class="text-xl font-black uppercase italic tracking-tighter text-white">Çizime Başlamak İçin</h3>
+                                <p class="text-xs text-slate-400 font-bold mt-2 uppercase tracking-widest leading-relaxed">Soldaki listeden bir bölge seçin<br>veya <span class="text-blue-500 underline">+ YENİ ALAN</span> butonuna basın</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6 px-4">
+                        <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
+                            <p class="text-[10px] font-black text-slate-500 uppercase mb-2">NASIL KULLANILIR?</p>
+                            <p class="text-[11px] text-slate-400 leading-relaxed">Soldan bir alan seçin veya yeni alan ekleyin. Görüntü üzerine tıklayarak ROI sınırlarını çizin.</p>
+                        </div>
+                        <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
+                            <p class="text-[10px] font-black text-slate-500 uppercase mb-2">TESPİT TİPLERİ</p>
+                            <p class="text-[11px] text-slate-400 leading-relaxed"><b>Yaya:</b> Bölgedeki insanları yakalar. <br><b>Hız:</b> Araçların giriş-çıkış süresini hesaplar.</p>
+                        </div>
+                        <div class="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
+                            <p class="text-[10px] font-black text-slate-500 uppercase mb-2">OTOMATİK KAYIT</p>
+                            <p class="text-[11px] text-slate-400 leading-relaxed">Kaydet butonuna bastığınızda tüm motorlar yeni koordinatlarla anında güncellenir.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tema Yönetimi
+        const themeToggle = document.getElementById('themeToggle');
+        const sunIcon = document.getElementById('sunIcon');
+        const moonIcon = document.getElementById('moonIcon');
+        
+        function setTheme(isLight) {
+            if (isLight) {
+                document.body.classList.add('light-mode');
+                sunIcon.classList.remove('hidden');
+                moonIcon.classList.add('hidden');
+            } else {
+                document.body.classList.remove('light-mode');
+                sunIcon.classList.add('hidden');
+                moonIcon.classList.remove('hidden');
+            }
+            localStorage.setItem('theme', isLight ? 'light' : 'dark');
+        }
+
+        themeToggle.addEventListener('click', () => {
+            const isLight = !document.body.classList.contains('light-mode');
+            setTheme(isLight);
+        });
+
+        if (localStorage.getItem('theme') === 'light') setTheme(true);
+
+        let config = { cameras: {} };
+        let currentCamId = "1";
+        let currentTaskId = null;
+        const canvas = document.getElementById('roiCanvas');
+        const ctx = canvas.getContext('2d');
+        const img = document.getElementById('streamPreview');
+        const statusEl = document.getElementById('status');
+
+        const COLORS = {
+            wrong_way: '#3b82f6', // Mavi
+            pedestrian: '#ef4444', // Kırmızı
+            speed: '#a855f7' // Mor
+        };
+
+        const TYPE_NAMES = {
+            wrong_way: 'Ters Yön Tespiti',
+            pedestrian: 'Yaya İhlal Denetimi',
+            speed: 'Hız Koridoru Analizi'
+        };
+
+        async function fetchConfig() {
+            const res = await fetch('/api/config');
+            config = await res.json();
+            renderCamList();
+            if (Object.keys(config.cameras).length > 0) {
+                if (!config.cameras[currentCamId]) currentCamId = Object.keys(config.cameras)[0];
+                updateUI();
+            }
+        }
+
+        function renderCamList() {
+            const select = document.getElementById('camSelect');
+            select.innerHTML = '';
+            Object.keys(config.cameras).forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.innerText = config.cameras[id].name;
+                select.appendChild(opt);
+            });
+            select.value = currentCamId;
+        }
+
+        function updateUI() {
+            const cam = config.cameras[currentCamId];
+            if (!cam) return;
+
+            document.getElementById('camName').value = cam.name || "";
+            document.getElementById('camSource').value = cam.source || "";
+            
+            // Uyarıyı göster/gizle
+            const warning = document.getElementById('noTaskWarning');
+            if (currentTaskId !== null) {
+                warning.style.opacity = '0';
+                setTimeout(() => warning.style.display = 'none', 500);
+            } else {
+                warning.style.display = 'flex';
+                setTimeout(() => warning.style.opacity = '1', 10);
+            }
+            
+            // Task listesini oluştur
+            const taskList = document.getElementById('taskList');
+            taskList.innerHTML = '';
+            
+            if (!cam.tasks) cam.tasks = [];
+            
+            cam.tasks.forEach((task, index) => {
+                const div = document.createElement('div');
+                div.className = `task-card glass p-5 rounded-2xl cursor-pointer ${currentTaskId === index ? 'active' : ''}`;
+                div.onclick = () => { currentTaskId = index; updateUI(); };
+                
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-3">
+                        <span class="text-[10px] font-black uppercase tracking-widest text-slate-500">BÖLGE #${index + 1}</span>
+                        <button onclick="deleteTask(${index})" class="text-red-500 hover:text-white transition-colors">✕</button>
+                    </div>
+                    <select onchange="updateTaskType(${index}, this.value)" class="w-full bg-slate-900 border border-white/5 rounded-xl p-2 text-xs outline-none focus:border-blue-500">
+                        <option value="wrong_way" ${task.type === 'wrong_way' ? 'selected' : ''}>Ters Yön</option>
+                        <option value="pedestrian" ${task.type === 'pedestrian' ? 'selected' : ''}>Yaya İhlali</option>
+                        <option value="speed" ${task.type === 'speed' ? 'selected' : ''}>Hız Koridoru</option>
+                    </select>
+                `;
+                taskList.appendChild(div);
+            });
+
+            if (currentTaskId !== null && cam.tasks[currentTaskId]) {
+                document.getElementById('activeTaskLabel').innerText = `Aktif Düzenleme: BÖLGE #${currentTaskId + 1} (${TYPE_NAMES[cam.tasks[currentTaskId].type]})`;
+            } else {
+                document.getElementById('activeTaskLabel').innerText = `Aktif Düzenleme: Yok (Bir bölge seçin)`;
+            }
+
+            img.src = `/video_feed/${currentCamId}?t=` + Date.now();
+            draw();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const cam = config.cameras[currentCamId];
+            if (!cam || !cam.tasks) return;
+
+            cam.tasks.forEach((task, index) => {
+                const isSelected = currentTaskId === index;
+                const points = task.roi || [];
+                if (points.length === 0) return;
+
+                ctx.lineWidth = isSelected ? 4 : 1;
+                ctx.strokeStyle = isSelected ? (COLORS[task.type] || '#3b82f6') : '#ffffff44';
+                ctx.fillStyle = isSelected ? ((COLORS[task.type] || '#3b82f6') + '22') : '#ffffff11';
+                
+                ctx.beginPath();
+                const startX = (points[0][0] / 800) * canvas.width;
+                const startY = (points[0][1] / 450) * canvas.height;
+                ctx.moveTo(startX, startY);
+
+                points.forEach((p, i) => {
+                    const px = (p[0] / 800) * canvas.width;
+                    const py = (p[1] / 450) * canvas.height;
+                    if (isSelected) {
+                        ctx.save();
+                        ctx.fillStyle = ctx.strokeStyle;
+                        ctx.fillRect(px - 5, py - 5, 10, 10);
+                        ctx.restore();
+                    }
+                    if (i > 0) ctx.lineTo(px, py);
+                });
+
+                if (points.length > 2) ctx.closePath();
+                ctx.stroke();
+                ctx.fill();
+            });
+        }
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvasContainer');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+            draw();
+        }
+        window.addEventListener('resize', resizeCanvas);
+        setTimeout(resizeCanvas, 500);
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (currentTaskId === null) return;
+            const cam = config.cameras[currentCamId];
+            if (!cam.tasks[currentTaskId]) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.round(((e.clientX - rect.left) / canvas.width) * 800);
+            const y = Math.round(((e.clientY - rect.top) / canvas.height) * 450);
+            
+            if (!cam.tasks[currentTaskId].roi) cam.tasks[currentTaskId].roi = [];
+            cam.tasks[currentTaskId].roi.push([x, y]);
+            draw();
+        });
+
+        window.deleteTask = (index) => {
+            event.stopPropagation();
+            if (!confirm("Bu bölgeyi silmek istediğinize emin misiniz?")) return;
+            config.cameras[currentCamId].tasks.splice(index, 1);
+            if (currentTaskId === index) currentTaskId = null;
+            updateUI();
+        };
+
+        window.updateTaskType = (index, val) => {
+            config.cameras[currentCamId].tasks[index].type = val;
+            draw();
+        };
+
+        document.getElementById('addTask').addEventListener('click', () => {
+            if (!config.cameras[currentCamId].tasks) config.cameras[currentCamId].tasks = [];
+            config.cameras[currentCamId].tasks.push({ type: 'wrong_way', roi: [] });
+            currentTaskId = config.cameras[currentCamId].tasks.length - 1;
+            updateUI();
+        });
+
+        document.getElementById('clearROI').addEventListener('click', () => {
+            if (currentTaskId !== null) {
+                config.cameras[currentCamId].tasks[currentTaskId].roi = [];
+                draw();
+            }
+        });
+
+        document.getElementById('camSelect').addEventListener('change', (e) => {
+            currentCamId = e.target.value;
+            currentTaskId = null;
+            updateUI();
+        });
+
+        document.getElementById('saveConfig').addEventListener('click', async () => {
+            config.cameras[currentCamId].name = document.getElementById('camName').value;
+            config.cameras[currentCamId].source = document.getElementById('camSource').value;
+            statusEl.innerText = "TÜM AYARLAR KAYDEDİLİYOR...";
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (res.ok) {
+                    statusEl.innerText = "BAŞARIYLA KAYDEDİLDİ";
+                    statusEl.className = "text-[10px] font-black bg-green-600/20 px-4 py-2 rounded-full text-green-500 border border-green-500/20";
+                    setTimeout(() => {
+                        statusEl.innerText = "HAZIR";
+                        statusEl.className = "text-[10px] font-black bg-slate-900 px-4 py-2 rounded-full text-slate-500 border border-white/5";
+                    }, 2000);
+                }
+            } catch (e) { statusEl.innerText = "HATA!"; }
+        });
+
+        document.getElementById('saveCamOnly').addEventListener('click', async () => {
+            config.cameras[currentCamId].name = document.getElementById('camName').value;
+            config.cameras[currentCamId].source = document.getElementById('camSource').value;
+            statusEl.innerText = "KAMERA SİSTEME TANITILIYOR...";
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (res.ok) {
+                    statusEl.innerText = "YAYIN BAŞLATILDI - GÖRÜNTÜ BEKLENİYOR...";
+                    setTimeout(async () => {
+                        await fetchConfig(); // Sunucudan güncel durumu çek ve motoru tetikle
+                    }, 1500);
+                }
+            } catch (e) { statusEl.innerText = "HATA!"; }
+        });
+
+        document.getElementById('addCam').addEventListener('click', () => {
+            const camIds = Object.keys(config.cameras).map(Number);
+            const nextId = camIds.length > 0 ? Math.max(...camIds) + 1 : 1;
+            config.cameras[nextId] = {
+                name: `Yeni Kamera ${nextId}`,
+                source: "",
+                tasks: []
+            };
+            currentCamId = nextId.toString();
+            renderCamList();
+            updateUI();
+        });
+
+        fetchConfig();
+    </script>
+</body>
+</html>
