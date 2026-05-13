@@ -2,7 +2,7 @@
     "cameras": {
         "1": {
             "name": "1. Koridor",
-            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
+            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi",
             "tasks": [
                 {
                     "roi": [
@@ -29,7 +29,7 @@
         },
         "2": {
             "name": "2. Koridor",
-            "source": "rtsp://admin:sifre123@192.168.1.101:554/cam/realmonitor?channel=1&subtype=0",
+            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi",
             "tasks": [
                 {
                     "roi": [
@@ -88,7 +88,7 @@
         },
         "3": {
             "name": "3. Koridor",
-            "source": "rtsp://admin:sifre123@192.168.1.102:554/cam/realmonitor?channel=1&subtype=0",
+            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch50_20260422112304_20260422113058_hız.avi",
             "tasks": [
                 {
                     "roi": [
@@ -110,13 +110,29 @@
                         ]
                     ],
                     "type": "speed"
+                },
+                {
+                    "roi": [
+                        [
+                            491,
+                            130
+                        ],
+                        [
+                            552,
+                            140
+                        ],
+                        [
+                            413,
+                            448
+                        ],
+                        [
+                            4,
+                            431
+                        ]
+                    ],
+                    "type": "wrong_way"
                 }
             ]
-        },
-        "4": {
-            "name": "Kamera 4",
-            "source": "rtsp://admin:sifre123@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
-            "tasks": []
         }
     }
 }

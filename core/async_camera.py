@@ -1,6 +1,10 @@
+import os
+os.environ["OPENCV_FFMPEG_THREADS"] = "1"
 import cv2
 import threading
 import time
+
+open_lock = threading.Lock() # FFmpeg async_lock crash fix
 
 class SmartCamera:
     """
@@ -16,7 +20,7 @@ class SmartCamera:
         if simulate_live:
             self.is_live = True
             
-        self.cap = cv2.VideoCapture() # Initialize empty
+        self.cap = None # Thread içinde oluşturulacak
         self.ret = False
         self.frame = None
         self.running = False
@@ -26,8 +30,14 @@ class SmartCamera:
         """Threadi başlatır. Kaynağı arka planda açar."""
         if not self.running:
             self.running = True
-            self.thread = threading.Thread(target=self._update, daemon=True)
-            self.thread.start()
+            if self.is_live:
+                self.thread = threading.Thread(target=self._update, daemon=True)
+                self.thread.start()
+            else:
+                # Yerel dosya ise thread kullanmadan senkron aç
+                self.cap = cv2.VideoCapture(self.source)
+                if "hız" in self.source.lower() or "hiz" in self.source.lower():
+                    self.cap.set(cv2.CAP_PROP_POS_MSEC, 150000)
         return self
 
     def _update(self):
@@ -36,10 +46,13 @@ class SmartCamera:
         retry_count = 0
         
         while self.running:
-            if not self.cap.isOpened():
+            if self.cap is None or not self.cap.isOpened():
                 retry_count += 1
                 print(f"[*] Kamera bağlantısı deneniyor ({retry_count}): {self.source}")
-                self.cap.open(self.source)
+                if self.cap is None:
+                    self.cap = cv2.VideoCapture()
+                with open_lock:
+                    self.cap.open(self.source)
                 if self.cap.isOpened():
                     self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25.0
                 else:
@@ -90,23 +103,26 @@ class SmartCamera:
             return self.ret, self.frame
         else:
             # Video dosyasıysa, bittiğinde otomatik başa sar
-            ret, frame = self.cap.read()
-            if not ret:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if self.cap is not None:
                 ret, frame = self.cap.read()
-            return ret, frame
+                if not ret:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = self.cap.read()
+                return ret, frame
+            return False, None
 
     def isOpened(self):
-        return self.cap.isOpened()
+        return self.cap is not None and self.cap.isOpened()
 
     def release(self):
         self.running = False
         if self.is_live and hasattr(self, 'thread'):
             self.thread.join(timeout=1.0)
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
 
     def get(self, propId):
-        return self.cap.get(propId)
+        return self.cap.get(propId) if self.cap is not None else 0
 
     def set(self, propId, value):
-        return self.cap.set(propId, value)
+        return self.cap.set(propId, value) if self.cap is not None else False

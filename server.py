@@ -1,4 +1,5 @@
 import os
+os.environ["OPENCV_FFMPEG_THREADS"] = "1"
 import cv2
 import time
 import math
@@ -126,6 +127,34 @@ class HybridEngine:
         if self.on_violation:
             self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": v_type, "time": ts_str, "img": img_name})
 
+    def _compute_perspective_matrix(self, polygon):
+        if len(polygon) != 4: return None
+        pts = np.array(polygon, dtype="float32")
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        dst = np.array([[0, 0], [4.0, 0], [4.0, ai_config.SPEED_ROI_DISTANCE], [0, ai_config.SPEED_ROI_DISTANCE]], dtype="float32")
+        return cv2.getPerspectiveTransform(rect, dst)
+
+    def _calculate_hybrid_distance(self, roi_polygon, p1, p2):
+        M = self._compute_perspective_matrix(roi_polygon)
+        if M is not None:
+            pt1 = np.array([[[p1[0], p1[1]]]], dtype="float32")
+            pt2 = np.array([[[p2[0], p2[1]]]], dtype="float32")
+            w1 = cv2.perspectiveTransform(pt1, M)[0][0]
+            w2 = cv2.perspectiveTransform(pt2, M)[0][0]
+            return math.sqrt((w1[0] - w2[0])**2 + (w1[1] - w2[1])**2)
+        else:
+            pts = np.array(roi_polygon)
+            min_y, max_y = np.min(pts[:, 1]), np.max(pts[:, 1])
+            roi_px_len = max(1, max_y - min_y)
+            px_dist = math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+            return (px_dist / roi_px_len) * ai_config.SPEED_ROI_DISTANCE
+
     def process(self):
         while self.running:
             try:
@@ -139,6 +168,13 @@ class HybridEngine:
                 
                 display_frame = frame.copy()
                 self.frame_count += 1
+                
+                # Her zaman sabit çizgileri ve bölgeleri çiz
+                for task in self.tasks:
+                    roi = np.array([(int(px*sx), int(py*sy)) for px, py in task['roi']], dtype=np.int32)
+                    cv2.polylines(display_frame, [roi], True, (0, 255, 0), 2)
+                    if task['type'] == 'wrong_way':
+                        cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 2)
                 
                 if self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0:
                     results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, verbose=False)
@@ -184,20 +220,22 @@ class HybridEngine:
                                         
                                     elif t_type == "speed" and cls in [2,3,5,7]:
                                         if id not in self.entry_times: self.entry_times[id] = {}
-                                        if idx not in self.entry_times[id]: self.entry_times[id][idx] = time.time()
+                                        if idx not in self.entry_times[id]: self.entry_times[id][idx] = {'time': time.time(), 'pos': (cx, cy)}
                                 
                                 elif not is_in_roi and id in self.entry_times and idx in self.entry_times[id]:
                                     # Hız Hesaplama (Çıkışta)
-                                    duration = time.time() - self.entry_times[id][idx]
+                                    entry_info = self.entry_times[id][idx]
+                                    duration = time.time() - entry_info['time']
                                     if duration > 0.5:
-                                        speed = (ai_config.SPEED_ROI_DISTANCE / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
+                                        distance_meters = self._calculate_hybrid_distance(roi, entry_info['pos'], (cx, cy))
+                                        speed = (distance_meters / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
                                         if speed > ai_config.MIN_SPEED_LIMIT:
                                             self.log_violation(id, frame, box, f"Hız İhlali ({int(speed)} km/h)")
                                     del self.entry_times[id][idx]
                                 
-                                # Çizim
-                                color = (0, 255, 0) if not is_in_roi else (0, 0, 255)
-                                cv2.polylines(display_frame, [roi], True, color, 2)
+                                # İhlal veya bölgede olma durumunda kırmızı ile ez
+                                if is_in_roi:
+                                    cv2.polylines(display_frame, [roi], True, (0, 0, 255), 3)
                                 
                             self.prev_positions[id] = (cx, cy)
                             label = f"ID: {id}" + (" (SABIT)" if not is_moving else "")
@@ -223,6 +261,7 @@ def main():
         engine.on_violation = notify
         cameras[cam_id] = engine
         threading.Thread(target=engine.process, daemon=True).start()
+        time.sleep(1.0) # FFmpeg thread çarpışmasını (Assertion fctx->async_lock) önlemek için gecikme
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def api_config():

@@ -190,6 +190,34 @@ class SpeedEngine:
             for k in stale:
                 del d[k]
 
+    def _compute_perspective_matrix(self, polygon):
+        if len(polygon) != 4: return None
+        pts = np.array(polygon, dtype="float32")
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        dst = np.array([[0, 0], [4.0, 0], [4.0, self.roi_distance], [0, self.roi_distance]], dtype="float32")
+        return cv2.getPerspectiveTransform(rect, dst)
+
+    def _calculate_hybrid_distance(self, p1, p2):
+        M = self._compute_perspective_matrix(self.ped_roi_polygon)
+        if M is not None:
+            pt1 = np.array([[[p1[0], p1[1]]]], dtype="float32")
+            pt2 = np.array([[[p2[0], p2[1]]]], dtype="float32")
+            w1 = cv2.perspectiveTransform(pt1, M)[0][0]
+            w2 = cv2.perspectiveTransform(pt2, M)[0][0]
+            return math.sqrt((w1[0] - w2[0])**2 + (w1[1] - w2[1])**2)
+        else:
+            pts = self.ped_roi_polygon
+            min_y, max_y = np.min(pts[:, 1]), np.max(pts[:, 1])
+            roi_px_len = max(1, max_y - min_y)
+            px_dist = math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+            return (px_dist / roi_px_len) * self.roi_distance
+
     def process(self):
         while True:
             try:
@@ -271,11 +299,13 @@ class SpeedEngine:
                                 
                             if cls in [2, 3, 5, 7]:
                                 if is_in_roi and id not in self.entry_times and is_moving: 
-                                    self.entry_times[id] = current_ts
+                                    self.entry_times[id] = {'time': current_ts, 'pos': (cx, cy)}
                                 elif not is_in_roi and id in self.entry_times:
-                                    duration = current_ts - self.entry_times[id]
+                                    entry_info = self.entry_times[id]
+                                    duration = current_ts - entry_info['time']
                                     if duration > ai_config.SPEED_CALC_MIN_DURATION and ai_config.ENABLE_SPEED_DETECTION:
-                                        speed = (self.roi_distance / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
+                                        distance_meters = self._calculate_hybrid_distance(entry_info['pos'], (cx, cy))
+                                        speed = (distance_meters / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
                                         if speed > ai_config.MIN_SPEED_LIMIT and roi_confirmed: 
                                             self.log_violation(id, frame, speed=speed, box=box)
                                     del self.entry_times[id]
