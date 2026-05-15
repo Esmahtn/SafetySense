@@ -12,6 +12,7 @@ const API_BASE = "http://localhost:5000";
 function App() {
   const [stats, setStats] = useState({ total: 0, history: [] });
   const [config, setConfig] = useState({ cameras: {} });
+  const [auth, setAuth] = useState({ logged_in: false, role: null, user: null });
   const [isLight, setIsLight] = useState(localStorage.getItem('theme') === 'light');
   
   // Theme Management
@@ -56,6 +57,15 @@ function App() {
     }
   };
 
+  const fetchAuth = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/auth/status`);
+      setAuth(res.data);
+    } catch (err) {
+      console.error("Auth hatası:", err);
+    }
+  };
+
   const toggleSelect = (id) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -94,6 +104,7 @@ function App() {
   useEffect(() => {
     fetchStats();
     fetchConfig();
+    fetchAuth();
     const eventSource = new EventSource(`${API_BASE}/stream`);
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -233,14 +244,24 @@ function App() {
                 {isLight ? <Moon size={24} className="group-hover:rotate-12 transition-transform" /> : <Sun size={24} className="group-hover:rotate-45 transition-transform" />}
               </button>
               
-              <a href="/settings" className="glass px-8 py-4 rounded-3xl flex items-center gap-6 border-white/5 hover:border-red-600/50 hover:bg-red-600/10 transition-all group">
-                <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center group-hover:rotate-90 transition-transform duration-500">
-                    <Settings size={20} className="text-gray-400 group-hover:text-red-500" />
+              {auth.role === 'admin' && (
+                <a href="/settings" className="glass px-8 py-4 rounded-3xl flex items-center gap-6 border-white/5 hover:border-red-600/50 hover:bg-red-600/10 transition-all group">
+                  <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center group-hover:rotate-90 transition-transform duration-500">
+                      <Settings size={20} className="text-gray-400 group-hover:text-red-500" />
+                  </div>
+                  <div className="text-left hidden md:block">
+                      <p className="text-xl font-outfit font-black tracking-tight">AYARLAR</p>
+                      <p className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">SİSTEM PANELİ</p>
+                  </div>
+                </a>
+              )}
+
+              <a href="/logout" className="glass px-6 py-4 rounded-3xl flex items-center gap-4 border-white/5 hover:border-red-600/50 hover:bg-red-600/10 transition-all group">
+                <div className="text-right hidden md:block">
+                    <p className="text-sm font-outfit font-black tracking-tight">{auth.user}</p>
+                    <p className="text-[9px] text-gray-600 font-bold uppercase tracking-widest">ÇIKIŞ YAP</p>
                 </div>
-                <div className="text-left">
-                    <p className="text-xl font-outfit font-black tracking-tight">AYARLAR</p>
-                    <p className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">SİSTEM PANELİ</p>
-                </div>
+                <User size={20} className="text-gray-400 group-hover:text-red-500" />
               </a>
             </div>
           </div>

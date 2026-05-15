@@ -13,19 +13,71 @@ import shutil
 from datetime import datetime, timedelta
 from collections import deque
 from queue import Queue
-from flask import Flask, Response, jsonify, send_from_directory, request
+from functools import wraps
+from flask import Flask, Response, jsonify, send_from_directory, request, session, redirect, url_for
 from flask_cors import CORS
 from ultralytics import YOLO
 from core.async_camera import SmartCamera
 import ai_config
 
 app = Flask(__name__, static_folder='dashboard/dist', static_url_path='/')
+app.secret_key = "safetysense_pro_secret_key_123"
 CORS(app)
 
+USERS = {
+    "admin": {"password": "admin", "role": "admin"},
+    "user": {"password": "user", "role": "user"}
+}
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login_page'))
+        if session.get('role') != 'admin':
+            return "Yetkisiz Erişim - Sadece Admin hesabı buraya girebilir.", 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login_page():
+    if request.method == 'POST':
+        data = request.json if request.is_json else request.form
+        username = data.get('username')
+        password = data.get('password')
+        if username in USERS and USERS[username]['password'] == password:
+            session['user'] = username
+            session['role'] = USERS[username]['role']
+            return jsonify({"status": "success", "role": session['role']})
+        return jsonify({"status": "error", "message": "Geçersiz kullanıcı adı veya şifre"}), 401
+    return send_from_directory(app.static_folder, 'login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    session.pop('role', None)
+    return redirect(url_for('login_page'))
+
+@app.route('/api/auth/status')
+def auth_status():
+    if 'user' in session:
+        return jsonify({"logged_in": True, "role": session.get('role'), "user": session.get('user')})
+    return jsonify({"logged_in": False})
+
 @app.route('/')
+@login_required
 def index(): return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/settings')
+@admin_required
 def settings(): return send_from_directory(app.static_folder, 'settings.html')
 
 @app.route('/assets/<path:path>')
