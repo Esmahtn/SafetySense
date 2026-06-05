@@ -1,0 +1,14 @@
+{
+    "admin": {
+        "password": "admin",
+        "role": "admin"
+    },
+    "user": {
+        "password": "user",
+        "role": "user"
+    },
+    "esma": {
+        "password": "1",
+        "role": "user"
+    }
+}

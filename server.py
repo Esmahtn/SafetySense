@@ -10,6 +10,9 @@ import random
 import sqlite3
 import json
 import shutil
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from collections import deque
 from queue import Queue
@@ -24,10 +27,19 @@ app = Flask(__name__, static_folder='dashboard/dist', static_url_path='/')
 app.secret_key = "safetysense_pro_secret_key_123"
 CORS(app)
 
-USERS = {
-    "admin": {"password": "admin", "role": "admin"},
-    "user": {"password": "user", "role": "user"}
-}
+# Load users from persistent JSON if available, otherwise use defaults
+USERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.json")
+if os.path.exists(USERS_FILE):
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        USERS = json.load(f)
+else:
+    USERS = {
+        "admin": {"password": "admin", "role": "admin"},
+        "user": {"password": "user", "role": "user"}
+    }
+    # Ensure the default file exists for future persistence
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(USERS, f, indent=4, ensure_ascii=False)
 
 def login_required(f):
     @wraps(f)
@@ -66,11 +78,141 @@ def logout():
     session.pop('role', None)
     return redirect(url_for('login_page'))
 
+def save_users():
+    """Persist the USERS dict to the JSON file."""
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(USERS, f, indent=4, ensure_ascii=False)
+
+@app.route('/admin/create_user', methods=['POST'])
+@admin_required
+def admin_create_user():
+    """Create a new user (admin or regular) via admin API."""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    role = data.get('role', 'user')
+    if not username or not password:
+        return jsonify({"status": "error", "message": "username and password required"}), 400
+    if role not in ('admin', 'user'):
+        return jsonify({"status": "error", "message": "Invalid role"}), 400
+    if username in USERS:
+        return jsonify({"status": "error", "message": "User already exists"}), 400
+    USERS[username] = {"password": password, "role": role}
+    save_users()
+    return jsonify({"status": "success", "user": username, "role": role})
+
+@app.route('/admin/set_role', methods=['POST'])
+@admin_required
+def admin_set_role():
+    """Change role of an existing user (admin or user)."""
+    data = request.json
+    username = data.get('username')
+    role = data.get('role')
+    if username not in USERS:
+        return jsonify({"status": "error", "message": "User not found"}), 404
+    if role not in ('admin', 'user'):
+        return jsonify({"status": "error", "message": "Invalid role"}), 400
+    USERS[username]['role'] = role
+    save_users()
+    return jsonify({"status": "success", "user": username, "role": role})
+
 @app.route('/api/auth/status')
 def auth_status():
     if 'user' in session:
         return jsonify({"logged_in": True, "role": session.get('role'), "user": session.get('user')})
     return jsonify({"logged_in": False})
+
+# New endpoint to list users for admin UI
+@app.route('/admin/list_users')
+@admin_required
+def admin_list_users():
+    return jsonify(USERS)
+
+# Admin UI page for managing users
+@app.route('/admin/users')
+@admin_required
+def admin_users_page():
+    return """
+    <!doctype html>
+    <html lang='tr'>
+    <head>
+        <meta charset='UTF-8'>
+        <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+        <title>Admin Kullanıcı Yönetimi</title>
+        <style>
+            body { background:#020203; color:#fff; font-family:Arial,Helvetica,sans-serif; padding:20px; }
+            input, select { padding:8px; margin:4px; border-radius:4px; border:none; }
+            button { padding:8px 12px; margin:4px; border:none; border-radius:4px; background:#c00; color:#fff; cursor:pointer; }
+            table { width:100%; border-collapse:collapse; margin-top:20px; }
+            th, td { padding:8px; border:1px solid #444; text-align:left; }
+        </style>
+    </head>
+    <body>
+    <a href="/settings" class="glass px-6 py-4 rounded-3xl flex items-center gap-2 border-white/5 hover:border-blue-600/50 hover:bg-blue-600/10 transition-all font-black text-xs uppercase tracking-widest text-blue-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" class="stroke-current"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 12 5.6V5a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V12a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Ayarlara Dön</a>
+        <h2>Yeni Kullanıcı Oluştur</h2>
+        <form id='createForm'>
+            <input type='text' id='username' placeholder='Kullanıcı Adı' required />
+            <input type='password' id='password' placeholder='Şifre' required />
+            <select id='role'>
+                <option value='user'>Kullanıcı</option>
+                <option value='admin'>Admin</option>
+            </select>
+            <button type='submit'>Oluştur</button>
+        </form>
+        <h2>Kullanıcılar</h2>
+        <table id='usersTable'>
+            <thead><tr><th>Kullanıcı</th><th>Rol</th><th>İşlem</th></tr></thead>
+            <tbody></tbody>
+        </table>
+        <script>
+            const API = 'http://localhost:5000';
+            async function loadUsers(){
+                const res = await fetch(`${API}/admin/list_users`, {credentials:'include'});
+                const data = await res.json();
+                const tbody = document.querySelector('#usersTable tbody');
+                tbody.innerHTML='';
+                for(const [user,info] of Object.entries(data)){
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${user}</td><td>${info.role}</td><td><select class='roleSelect' data-user='${user}'>
+                        <option value='user' ${info.role==='user'?'selected':''}>Kullanıcı</option>
+                        <option value='admin' ${info.role==='admin'?'selected':''}>Admin</option>
+                    </select></td>`;
+                    tbody.appendChild(tr);
+                }
+                document.querySelectorAll('.roleSelect').forEach(sel=>{
+                    sel.addEventListener('change', async e=>{
+                        const username = e.target.dataset.user;
+                        const role = e.target.value;
+                        await fetch(`${API}/admin/set_role`, {
+                            method:'POST',
+                            headers:{'Content-Type':'application/json'},
+                            credentials:'include',
+                            body:JSON.stringify({username,role})
+                        });
+                        loadUsers();
+                    });
+                });
+            }
+            document.getElementById('createForm').addEventListener('submit', async e=>{
+                e.preventDefault();
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+                const role = document.getElementById('role').value;
+                await fetch(`${API}/admin/create_user`, {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    credentials:'include',
+                    body:JSON.stringify({username,password,role})
+                });
+                document.getElementById('createForm').reset();
+                loadUsers();
+            });
+            loadUsers();
+        </script>
+    </body>
+    </html>
+    """
+
 
 @app.route('/')
 @login_required
@@ -87,6 +229,61 @@ VIOLATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ihlal
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "violations.db")
 os.makedirs(VIOLATIONS_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_config.json")
+EMAIL_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_config.json")
+
+DEFAULT_EMAIL_CONFIG = {
+    "enabled": False,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "",
+    "sender_password": "",
+    "recipient_email": ""
+}
+
+def load_email_config():
+    if os.path.exists(EMAIL_CONFIG_PATH):
+        with open(EMAIL_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return DEFAULT_EMAIL_CONFIG.copy()
+
+def save_email_config(cfg):
+    with open(EMAIL_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
+
+def send_violation_email(violation_data):
+    """Send an email notification for a new violation (runs in background thread)."""
+    try:
+        cfg = load_email_config()
+        if not cfg.get("enabled"):
+            return
+        if not cfg.get("sender_email") or not cfg.get("recipient_email"):
+            return
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"[SafetySense] Yeni İhlal: {violation_data.get('type', '')}"
+        msg["From"] = cfg["sender_email"]
+        msg["To"] = cfg["recipient_email"]
+
+        body = f"""
+        <html><body style='font-family:Arial,sans-serif;background:#111;color:#eee;padding:20px;'>
+          <h2 style='color:#e53e3e;'>🚨 Yeni Güvenlik İhlali Tespit Edildi</h2>
+          <table style='border-collapse:collapse;width:100%;'>
+            <tr><td style='padding:8px;color:#aaa;'>İhlal Türü</td><td style='padding:8px;color:#fff;font-weight:bold;'>{violation_data.get('type','')}</td></tr>
+            <tr><td style='padding:8px;color:#aaa;'>Kamera</td><td style='padding:8px;'>{violation_data.get('cam_name','')}</td></tr>
+            <tr><td style='padding:8px;color:#aaa;'>Zaman</td><td style='padding:8px;'>{violation_data.get('time','')}</td></tr>
+            <tr><td style='padding:8px;color:#aaa;'>Kayıt ID</td><td style='padding:8px;'>#{violation_data.get('db_id','')}</td></tr>
+          </table>
+          <p style='color:#666;margin-top:20px;font-size:12px;'>Bu bildirim SafetySense AI sistemi tarafından otomatik gönderilmiştir.</p>
+        </body></html>
+        """
+        msg.attach(MIMEText(body, "html"))
+
+        with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"])) as server:
+            server.starttls()
+            server.login(cfg["sender_email"], cfg["sender_password"])
+            server.sendmail(cfg["sender_email"], cfg["recipient_email"], msg.as_string())
+    except Exception as e:
+        print(f"[EMAIL] Gönderim hatası: {e}")
 
 def load_runtime_config():
     if os.path.exists(CONFIG_PATH):
@@ -176,8 +373,11 @@ class HybridEngine:
                        (int(vehicle_id), self.name, v_type, ts_str, img_name, ""))
         conn.commit(); last_id = cursor.lastrowid; conn.close()
         
+        violation_payload = {"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": v_type, "time": ts_str, "img": img_name}
         if self.on_violation:
-            self.on_violation({"id": int(vehicle_id), "db_id": last_id, "cam_name": self.name, "type": v_type, "time": ts_str, "img": img_name})
+            self.on_violation(violation_payload)
+        # Send email notification in background
+        threading.Thread(target=send_violation_email, args=(violation_payload,), daemon=True).start()
 
     def _compute_perspective_matrix(self, polygon):
         if len(polygon) != 4: return None
@@ -408,8 +608,91 @@ def api_start_camera():
         
     return jsonify({"status": "success"})
 
+@app.route('/api/email_settings', methods=['GET', 'POST'])
+@admin_required
+def email_settings():
+    if request.method == 'POST':
+        data = request.json
+        cfg = load_email_config()
+        cfg.update({
+            "enabled": bool(data.get("enabled", False)),
+            "smtp_host": data.get("smtp_host", cfg["smtp_host"]),
+            "smtp_port": int(data.get("smtp_port", cfg["smtp_port"])),
+            "sender_email": data.get("sender_email", cfg["sender_email"]),
+            "sender_password": data.get("sender_password", cfg["sender_password"]),
+            "recipient_email": data.get("recipient_email", cfg["recipient_email"])
+        })
+        save_email_config(cfg)
+        return jsonify({"status": "success"})
+    cfg = load_email_config()
+    # Never expose password to frontend
+    safe = {k: v for k, v in cfg.items() if k != "sender_password"}
+    safe["has_password"] = bool(cfg.get("sender_password"))
+    return jsonify(safe)
+
+@app.route('/api/test_email', methods=['POST'])
+@admin_required
+def test_email():
+    try:
+        cfg = load_email_config()
+        # Allow overriding password from request for test
+        test_password = request.json.get("sender_password") if request.json else None
+        if test_password:
+            cfg["sender_password"] = test_password
+        send_violation_email({
+            "type": "Test İhlali",
+            "cam_name": "Test Kamera",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "db_id": 0
+        })
+        return jsonify({"status": "success", "message": "Test e-postası gönderildi."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/screenshots/<path:filename>')
 def get_screenshot(filename): return send_from_directory(VIOLATIONS_DIR, filename)
+
+# ---- Kullanıcı Yönetimi API (React arayüzü için) ----
+@app.route('/api/users', methods=['GET'])
+@admin_required
+def api_list_users():
+    """Liste: tüm kullanıcıları döndür (şifre hariç)."""
+    result = [
+        {"id": uname, "username": uname, "role": info["role"]}
+        for uname, info in USERS.items()
+    ]
+    return jsonify(result)
+
+@app.route('/api/users/<string:username>', methods=['DELETE'])
+@admin_required
+def api_delete_user(username):
+    """Kullanıcı sil."""
+    if username not in USERS:
+        return jsonify({"status": "error", "message": "Kullanıcı bulunamadı."}), 404
+    # Admin kendi hesabını silemesin
+    if username == session.get('user'):
+        return jsonify({"status": "error", "message": "Kendi hesabınızı silemezsiniz."}), 400
+    del USERS[username]
+    save_users()
+    return jsonify({"status": "success"})
+
+@app.route('/api/users', methods=['POST'])
+@admin_required
+def api_create_user():
+    """Kullanıcı oluştur."""
+    data = request.json
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    role = data.get('role', 'user')
+    if not username or not password:
+        return jsonify({"status": "error", "message": "Kullanıcı adı ve şifre zorunludur."}), 400
+    if role not in ('admin', 'user'):
+        return jsonify({"status": "error", "message": "Geçersiz rol."}), 400
+    if username in USERS:
+        return jsonify({"status": "error", "message": "Bu kullanıcı adı zaten mevcut."}), 400
+    USERS[username] = {"password": password, "role": role}
+    save_users()
+    return jsonify({"status": "success", "username": username, "role": role})
 
 if __name__ == '__main__':
     main()
