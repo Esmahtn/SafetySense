@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import SettingsPage from './Settings';
-import UserManagement from './UserManagement';
+import AdminPanel from './AdminPanel';
 import {
   ShieldAlert,
   Moon,
   Sun,
-  Settings as SettingsIcon,
   User,
   X,
   Clock,
@@ -22,7 +20,8 @@ import {
   LayoutGrid,
   Maximize2,
   RefreshCcw,
-  Camera
+  Camera,
+  Plus
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:5000";
@@ -69,6 +68,14 @@ function App() {
       console.error("Config hatası:", err);
     }
   };
+
+  // Config'i her 5 saniyede bir yenile (yeni kamera ekleyince otomatik görünmesi için)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchConfig();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchAuth = async () => {
     try {
@@ -207,20 +214,11 @@ function App() {
     }
   };
 
-  // --- Settings Page ---
-  if (currentPage === 'settings') {
+  // --- Admin Panel ---
+  if (currentPage === 'admin') {
     return (
       <div className={`min-h-screen flex flex-col items-center justify-center ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#020203] text-white'}`}>
-        <SettingsPage isLight={isLight} setIsLight={setIsLight} onBack={() => setCurrentPage('dashboard')} />
-      </div>
-    );
-  }
-
-  // --- User Management Page ---
-  if (currentPage === 'users') {
-    return (
-      <div className={`min-h-screen flex flex-col items-center justify-center ${isLight ? 'bg-slate-100 text-slate-900' : 'bg-[#020203] text-white'}`}>
-        <UserManagement onBack={() => setCurrentPage('dashboard')} />
+        <AdminPanel onBack={() => setCurrentPage('dashboard')} isLight={isLight} />
       </div>
     );
   }
@@ -276,26 +274,15 @@ function App() {
               </button>
 
               {auth.role === 'admin' && (
-                <>
-                  <button
-                    onClick={() => setCurrentPage('settings')}
-                    className={`flex items-center gap-3 px-5 py-3 rounded-3xl border transition-all group ${isLight ? 'bg-slate-100 border-slate-200 hover:border-red-400 hover:bg-red-50' : 'glass border-white/5 hover:border-red-600/50 hover:bg-red-600/10'}`}
-                  >
-                    <div className="w-9 h-9 rounded-xl flex items-center justify-center group-hover:rotate-90 transition-transform duration-500 bg-white/5">
-                      <SettingsIcon size={18} className="text-gray-400 group-hover:text-red-500" />
-                    </div>
-                    <span className="text-sm font-outfit font-black tracking-tight hidden md:block">AYARLAR</span>
-                  </button>
-                  <button
-                    onClick={() => setCurrentPage('users')}
-                    className={`flex items-center gap-3 px-5 py-3 rounded-3xl border transition-all group ${isLight ? 'bg-slate-100 border-slate-200 hover:border-green-400 hover:bg-green-50' : 'glass border-white/5 hover:border-green-600/50 hover:bg-green-600/10'}`}
-                  >
-                    <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/5">
-                      <User size={18} className="text-gray-400 group-hover:text-green-500" />
-                    </div>
-                    <span className="text-sm font-outfit font-black hidden md:block">KULLANICI YÖNETİMİ</span>
-                  </button>
-                </>
+                <button
+                  onClick={() => setCurrentPage('admin')}
+                  className={`flex items-center gap-3 px-5 py-3 rounded-3xl border transition-all group ${isLight ? 'bg-slate-100 border-slate-200 hover:border-blue-400 hover:bg-blue-50' : 'glass border-white/5 hover:border-blue-600/50 hover:bg-blue-600/10'}`}
+                >
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-white/5">
+                    <Plus size={18} className="text-gray-400 group-hover:text-blue-500" />
+                  </div>
+                  <span className="text-sm font-outfit font-black hidden md:block">YÖNETİM PANELİ</span>
+                </button>
               )}
 
               <a href="/logout" className={`flex items-center gap-3 px-5 py-3 rounded-3xl border transition-all group ${isLight ? 'bg-slate-100 border-slate-200 hover:border-red-400' : 'glass border-white/5 hover:border-red-600/50 hover:bg-red-600/10'}`}>

@@ -23,7 +23,12 @@ from ultralytics import YOLO
 from core.async_camera import SmartCamera
 import ai_config
 
-app = Flask(__name__, static_folder='dashboard/dist', static_url_path='/')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DASHBOARD_BUILD_DIR = os.path.join(BASE_DIR, 'dashboard', 'dist')
+DASHBOARD_SRC_DIR = os.path.join(BASE_DIR, 'dashboard')
+DASHBOARD_BUILD_MISSING = not os.path.isdir(DASHBOARD_BUILD_DIR)
+
+app = Flask(__name__, static_folder=DASHBOARD_BUILD_DIR if not DASHBOARD_BUILD_MISSING else None, static_url_path='/')
 app.secret_key = "safetysense_pro_secret_key_123"
 CORS(app)
 
@@ -59,8 +64,31 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def build_missing_page():
+    return """
+    <!doctype html>
+    <html lang='tr'>
+      <head>
+        <meta charset='UTF-8'>
+        <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+        <title>Dashboard Build Eksik</title>
+      </head>
+      <body style='font-family:Arial,Helvetica,sans-serif;background:#111;color:#eee;padding:40px;'>
+        <h1>Dashboard derlemesi bulunamadı</h1>
+        <p>Sunucu hazır, ancak React/Vite ön yüzü <strong>dashboard/dist</strong> klasöründe bulunamadığı için istenen URL yüklenemiyor.</p>
+        <p>Lütfen Node.js yükleyip aşağıdaki komutları çalıştırın:</p>
+        <pre style='background:#222;color:#9f9;padding:16px;border-radius:8px;'>cd dashboard
+npm install
+npm run build</pre>
+        <p>Ardından sunucuyu yeniden başlatın.</p>
+      </body>
+    </html>
+    """
+
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
+    if DASHBOARD_BUILD_MISSING:
+        return build_missing_page()
     if request.method == 'POST':
         data = request.json if request.is_json else request.form
         username = data.get('username')
@@ -216,14 +244,23 @@ def admin_users_page():
 
 @app.route('/')
 @login_required
-def index(): return send_from_directory(app.static_folder, 'index.html')
+def index():
+    if DASHBOARD_BUILD_MISSING:
+        return build_missing_page()
+    return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/settings')
 @admin_required
-def settings(): return send_from_directory(app.static_folder, 'settings.html')
+def settings():
+    if DASHBOARD_BUILD_MISSING:
+        return build_missing_page()
+    return send_from_directory(app.static_folder, 'settings.html')
 
 @app.route('/assets/<path:path>')
-def send_assets(path): return send_from_directory(os.path.join(app.static_folder, 'assets'), path)
+def send_assets(path):
+    if DASHBOARD_BUILD_MISSING:
+        return build_missing_page()
+    return send_from_directory(os.path.join(app.static_folder, 'assets'), path)
 
 VIOLATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ihlal_kayitlari")
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "violations.db")
@@ -326,6 +363,15 @@ class HybridEngine:
         self.stationary_counters = {}
         self.alarm_ledger = []
         
+        # Ters yön + Yaya: kişi/araç başına ROI girişi başına sadece 1 kez alarm tetikle
+        # {(vehicle_id, task_idx): True}  — ROI'den çıkınca silinir
+        self.wrong_way_flagged = {}
+        self.pedestrian_flagged = {}
+        
+        # YENİ HOMOGRAPHY TABANLI HIZ HESAPLAMA STATE
+        self.homography_matrix = None
+        self.speed_tracking = {}  # {object_id: {'positions': [], 'timestamps': [], 'speeds': []}}
+        
         self.current_frame = None
         self.on_violation = None
 
@@ -341,6 +387,11 @@ class HybridEngine:
             self.cap.release(); self.cap = SmartCamera(new_source, simulate_live=False); self.cap.start()
         self.tasks = cam_data.get("tasks", [])
         self.prev_positions.clear(); self.violation_buffer.clear(); self.entry_times.clear()
+        self.wrong_way_flagged.clear()
+        self.pedestrian_flagged.clear()
+        # YENİ: Homography matrisini sıfırla
+        self.homography_matrix = None
+        self.speed_tracking.clear()
 
     def log_violation(self, vehicle_id, frame, box, v_type):
         now = time.time()
@@ -350,11 +401,11 @@ class HybridEngine:
         v_cat = v_type.split('(')[0].strip()
         for ts, ax, ay, atype in self.alarm_ledger:
             if atype.split('(')[0].strip() == v_cat:
-                if math.sqrt((cx-ax)**2 + (cy-ay)**2) < 150 and (now - ts) < 15: return
+                if math.sqrt((cx-ax)**2 + (cy-ay)**2) < 250 and (now - ts) < 20: return
 
         with shared_violation_lock:
             key = f"{vehicle_id}_{v_cat}"
-            if (now - shared_violation_log.get(key, 0)) < 300: return
+            if (now - shared_violation_log.get(key, 0)) < 30: return  # 30 saniye cooldown (aynı ID için)
             shared_violation_log[key] = now
 
         self.alarm_ledger.append((now, cx, cy, v_type))
@@ -368,6 +419,13 @@ class HybridEngine:
         cv2.putText(evidence, f"IHLAL: {v_type.upper()}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
         cv2.imwrite(img_path, evidence)
         
+        # Crop görseli oluştur
+        crop_img_name = f"crop_{img_name}"
+        crop_img_path = os.path.join(VIOLATIONS_DIR, crop_img_name)
+        crop = frame[int(box[1]):int(box[3]), int(box[0]):int(box[2])]
+        if crop.size > 0:
+            cv2.imwrite(crop_img_path, crop)
+        
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
         cursor.execute('INSERT INTO violations (vehicle_id, cam_name, type, timestamp, image_path, video_path) VALUES (?, ?, ?, ?, ?, ?)',
                        (int(vehicle_id), self.name, v_type, ts_str, img_name, ""))
@@ -379,33 +437,133 @@ class HybridEngine:
         # Send email notification in background
         threading.Thread(target=send_violation_email, args=(violation_payload,), daemon=True).start()
 
+    # ============================================================
+    # YENİ HOMOGRAPHY TABANLI HIZ HESAPLAMA FONKSİYONLARI
+    # ============================================================
+    
+    def _init_homography_matrix(self):
+        """Homography matrisini hesapla (bir kere çağrılır)"""
+        if self.homography_matrix is not None:
+            return self.homography_matrix
+        
+        try:
+            image_pts = np.array(ai_config.HOMOGRAPHY_IMAGE_POINTS, dtype="float32")
+            world_pts = np.array(ai_config.HOMOGRAPHY_WORLD_POINTS, dtype="float32")
+            self.homography_matrix = cv2.getPerspectiveTransform(image_pts, world_pts)
+            print(f"[{self.name}] Homography matrisi hesaplandı")
+            return self.homography_matrix
+        except Exception as e:
+            print(f"[{self.name}] Homography matrisi hesaplanamadı: {e}")
+            return None
+    
+    def _pixel_to_world(self, pixel_point):
+        """Piksel koordinatını gerçek dünya koordinatına dönüştür"""
+        M = self._init_homography_matrix()
+        if M is None:
+            return None
+        
+        try:
+            pt = np.array([[[pixel_point[0], pixel_point[1]]]], dtype="float32")
+            world_pt = cv2.perspectiveTransform(pt, M)[0][0]
+            return (world_pt[0], world_pt[1])
+        except Exception as e:
+            return None
+    
+    def _calculate_speed_from_tracking(self, object_id):
+        """Geçmiş konumlardan hız hesapla"""
+        if object_id not in self.speed_tracking:
+            return None, None
+        
+        tracking = self.speed_tracking[object_id]
+        positions = tracking['positions']
+        timestamps = tracking['timestamps']
+        
+        if len(positions) < 2:
+            return None, None
+        
+        # Toplam mesafe ve süre hesapla
+        total_distance = 0.0
+        for i in range(1, len(positions)):
+            dx = positions[i][0] - positions[i-1][0]
+            dy = positions[i][1] - positions[i-1][1]
+            total_distance += math.sqrt(dx**2 + dy**2)
+        
+        total_time = timestamps[-1] - timestamps[0]
+        if total_time <= 0:
+            return None, None
+        
+        speed_ms = total_distance / total_time
+        speed_kmh = speed_ms * 3.6
+        
+        # Moving average ile yumuşat
+        if len(tracking['speeds']) >= ai_config.SPEED_SMOOTHING_WINDOW:
+            recent_speeds = tracking['speeds'][-ai_config.SPEED_SMOOTHING_WINDOW:]
+            speed_kmh = sum(recent_speeds) / len(recent_speeds)
+        
+        # Confidence hesapla
+        frame_count = len(positions)
+        if frame_count < ai_config.MIN_TRACKING_FRAMES:
+            confidence = "low"
+        elif frame_count < ai_config.CONFIDENT_TRACKING_FRAMES:
+            confidence = "medium"
+        else:
+            confidence = "high"
+        
+        return speed_kmh, confidence
+    
+    def _update_speed_tracking(self, object_id, pixel_pos, world_pos, timestamp):
+        """Hız takibini güncelle"""
+        if object_id not in self.speed_tracking:
+            self.speed_tracking[object_id] = {
+                'positions': [],
+                'timestamps': [],
+                'speeds': [],
+                'missing_frames': 0
+            }
+        
+        tracking = self.speed_tracking[object_id]
+        
+        # Tespit kaybı toleransı
+        if len(tracking['timestamps']) > 0:
+            time_diff = timestamp - tracking['timestamps'][-1]
+            if time_diff > 0.5:  # 0.5 saniye üzeri gap
+                tracking['missing_frames'] += 1
+                if tracking['missing_frames'] > ai_config.MAX_MISSING_FRAMES:
+                    # Takibi sıfırla
+                    tracking['positions'] = []
+                    tracking['timestamps'] = []
+                    tracking['speeds'] = []
+                    tracking['missing_frames'] = 0
+        else:
+            tracking['missing_frames'] = 0
+        
+        # Yeni konumu ekle
+        tracking['positions'].append(world_pos)
+        tracking['timestamps'].append(timestamp)
+        
+        # Hızı hesapla ve kaydet
+        speed_kmh, _ = self._calculate_speed_from_tracking(object_id)
+        if speed_kmh is not None:
+            tracking['speeds'].append(speed_kmh)
+        
+        # Buffer boyutunu sınırla
+        max_buffer = 100
+        if len(tracking['positions']) > max_buffer:
+            tracking['positions'] = tracking['positions'][-max_buffer:]
+            tracking['timestamps'] = tracking['timestamps'][-max_buffer:]
+            tracking['speeds'] = tracking['speeds'][-max_buffer:]
+    
+    # ============================================================
+    # ESKİ HIZ HESAPLAMA FONKSİYONLARI (DEVRE DIŞI)
+    # ============================================================
+    
     def _compute_perspective_matrix(self, polygon):
-        if len(polygon) != 4: return None
-        pts = np.array(polygon, dtype="float32")
-        rect = np.zeros((4, 2), dtype="float32")
-        s = pts.sum(axis=1)
-        rect[0] = pts[np.argmin(s)]
-        rect[2] = pts[np.argmax(s)]
-        diff = np.diff(pts, axis=1)
-        rect[1] = pts[np.argmin(diff)]
-        rect[3] = pts[np.argmax(diff)]
-        dst = np.array([[0, 0], [4.0, 0], [4.0, ai_config.SPEED_ROI_DISTANCE], [0, ai_config.SPEED_ROI_DISTANCE]], dtype="float32")
-        return cv2.getPerspectiveTransform(rect, dst)
+        # ESKİ: ROI tabanlı perspective matrix - DEVRE DIŞI
+        return None
 
     def _calculate_hybrid_distance(self, roi_polygon, p1, p2):
-        M = self._compute_perspective_matrix(roi_polygon)
-        if M is not None:
-            pt1 = np.array([[[p1[0], p1[1]]]], dtype="float32")
-            pt2 = np.array([[[p2[0], p2[1]]]], dtype="float32")
-            w1 = cv2.perspectiveTransform(pt1, M)[0][0]
-            w2 = cv2.perspectiveTransform(pt2, M)[0][0]
-            return math.sqrt((w1[0] - w2[0])**2 + (w1[1] - w2[1])**2)
-        else:
-            pts = np.array(roi_polygon)
-            min_y, max_y = np.min(pts[:, 1]), np.max(pts[:, 1])
-            roi_px_len = max(1, max_y - min_y)
-            px_dist = math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-            return (px_dist / roi_px_len) * ai_config.SPEED_ROI_DISTANCE
+        # ESKİ: ROI tabanlı mesafe hesabı - DEVRE DIŞI
+        return 0.0
 
     def process(self):
         while self.running:
@@ -426,10 +584,24 @@ class HybridEngine:
                     roi = np.array([(int(px*sx), int(py*sy)) for px, py in task['roi']], dtype=np.int32)
                     cv2.polylines(display_frame, [roi], True, (0, 255, 0), 2)
                     if task['type'] == 'wrong_way':
-                        cv2.line(display_frame, (0, self.middle_y), (w, self.middle_y), (0, 255, 255), 2)
+                        if 'middleLine' in task and len(task['middleLine']) >= 2:
+                            # Kullanıcının çizdiği sarı orta çizgiyi göster (ölçeklenmiş)
+                            ml_scaled = [(int(p[0]*sx), int(p[1]*sy)) for p in task['middleLine']]
+                            if len(ml_scaled) >= 2:
+                                cv2.arrowedLine(display_frame, ml_scaled[0], ml_scaled[1], (0, 255, 255), 3, tipLength=0.15)
+                            for pt in ml_scaled:
+                                cv2.circle(display_frame, pt, 5, (0, 255, 255), -1)
+                            # İlk noktaya yön oku çiz ("DOĞRU YÖN" başlangıç noktası)
+                            cv2.putText(display_frame, "DOGRU YON", (ml_scaled[0][0]+8, ml_scaled[0][1]-8),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                        else:
+                            # Manuel çizgi yoksa otomatik yatay çizgi çiz
+                            roi_y_coords = [p[1] for p in roi]
+                            roi_middle_y = int((min(roi_y_coords) + max(roi_y_coords)) / 2)
+                            cv2.line(display_frame, (0, roi_middle_y), (w, roi_middle_y), (0, 255, 255), 2)
                 
                 if self.frame_count % ai_config.FRAME_SKIP_INTERVAL == 0:
-                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, verbose=False)
+                    results = self.model.track(frame, persist=True, classes=[0, 2, 3, 5, 7], imgsz=ai_config.YOLO_IMG_SIZE, conf=ai_config.YOLO_CONF_THRESHOLD, verbose=False, tracker="botsort.yaml")
                     active_ids = []
                     if results and results[0].boxes.id is not None:
                         boxes, ids, clss = results[0].boxes.xyxy.cpu().numpy(), results[0].boxes.id.cpu().numpy().astype(int), results[0].boxes.cls.cpu().numpy().astype(int)
@@ -459,31 +631,79 @@ class HybridEngine:
                                 if len(self.violation_buffer[id][idx]) > 8: self.violation_buffer[id][idx].pop(0)
                                 roi_confirmed = sum(self.violation_buffer[id][idx]) >= 3
                                 
-                                if is_in_roi and roi_confirmed and is_moving:
+                                flag_key = (id, idx)
+                                
+                                # ROI dışına çıkınca (histerezis onaylı) flagleri temizle
+                                if not roi_confirmed:
+                                    self.wrong_way_flagged.pop(flag_key, None)
+                                    self.pedestrian_flagged.pop(flag_key, None)
+                                
+                                if roi_confirmed and is_moving:  # Hareket kontrolü geri getirildi
                                     t_type = task['type']
-                                    if t_type == "wrong_way":
-                                        if id in self.prev_positions:
-                                            px, py = self.prev_positions[id]
-                                            if py > self.middle_y and cy <= self.middle_y:
-                                                self.log_violation(id, frame, box, "Ters Yön")
+                                    if t_type == "wrong_way" and cls in [2, 3, 5, 7]:
+                                        # Bu araç bu ROI girişinde zaten alarm verdiyse atla
+                                        if flag_key not in self.wrong_way_flagged:
+                                            if id in self.prev_positions:
+                                                px, py = self.prev_positions[id]
+                                                # Araç yeterince hareket etmiyor mu? Hareketsiz aracı filtrele
+                                                move_dist = math.sqrt((cx - px)**2 + (cy - py)**2)
+                                                if move_dist >= 5:  # 5 piksel altı hareketi yok say
+                                                    if 'middleLine' in task and len(task['middleLine']) >= 2:
+                                                        # Manuel orta çizgi kullan - noktaları frame boyutuna ölçekle
+                                                        middle_line = task['middleLine']
+                                                        # middleLine 800x450 referans koordinatlarında kaydedildi,
+                                                        # frame boyutuna ölçekliyoruz
+                                                        line_start = np.array([middle_line[0][0] * sx, middle_line[0][1] * sy])
+                                                        line_end   = np.array([middle_line[1][0] * sx, middle_line[1][1] * sy])
+                                                        # Çizgi yönü vektörü (doğru yön)
+                                                        line_vector = line_end - line_start
+                                                        line_len = np.linalg.norm(line_vector)
+                                                        if line_len >= 1e-6:
+                                                            line_vector = line_vector / line_len
+                                                            # Araç hareket vektörü
+                                                            vehicle_vector = np.array([cx - px, cy - py], dtype=float)
+                                                            v_len = np.linalg.norm(vehicle_vector)
+                                                            if v_len > 1e-6:
+                                                                vehicle_vector = vehicle_vector / v_len
+                                                                # Dot product: negatif ise araç ters yönde gidiyor
+                                                                dot_product = np.dot(line_vector, vehicle_vector)
+                                                                if dot_product < -0.4:  # Ters yön eşiği
+                                                                    # ROI girisi basina sadece 1 kez alarm
+                                                                    self.wrong_way_flagged[flag_key] = True
+                                                                    self.log_violation(id, frame, box, "Ters Yön")
+                                                    else:
+                                                        # ROI'nin merkezine göre tespit (eski yöntem - geçiş bazlı)
+                                                        roi_y_coords = [p[1] for p in roi]
+                                                        roi_middle_y = int((min(roi_y_coords) + max(roi_y_coords)) / 2)
+                                                        if py > roi_middle_y and cy <= roi_middle_y:
+                                                            self.wrong_way_flagged[flag_key] = True
+                                                            self.log_violation(id, frame, box, "Ters Yön")
                                                 
                                     elif t_type == "pedestrian" and cls == 0:
-                                        self.log_violation(id, frame, box, "Yaya İhlali")
+                                        # ROI girisi basina sadece 1 kez yaya alarmi
+                                        if flag_key not in self.pedestrian_flagged:
+                                            self.pedestrian_flagged[flag_key] = True
+                                            self.log_violation(id, frame, box, "Yaya İhlali")
                                         
                                     elif t_type == "speed" and cls in [2,3,5,7]:
-                                        if id not in self.entry_times: self.entry_times[id] = {}
-                                        if idx not in self.entry_times[id]: self.entry_times[id][idx] = {'time': time.time(), 'pos': (cx, cy)}
-                                
-                                elif not is_in_roi and id in self.entry_times and idx in self.entry_times[id]:
-                                    # Hız Hesaplama (Çıkışta)
-                                    entry_info = self.entry_times[id][idx]
-                                    duration = time.time() - entry_info['time']
-                                    if duration > 0.5:
-                                        distance_meters = self._calculate_hybrid_distance(roi, entry_info['pos'], (cx, cy))
-                                        speed = (distance_meters / duration) * 3.6 * ai_config.SPEED_CORRECTION_FACTOR
-                                        if speed > ai_config.MIN_SPEED_LIMIT:
-                                            self.log_violation(id, frame, box, f"Hız İhlali ({int(speed)} km/h)")
-                                    del self.entry_times[id][idx]
+                                        # YENİ: Homography tabanlı hız hesaplama
+                                        # Bounding box alt orta noktasını al
+                                        x_center = (box[0] + box[2]) / 2
+                                        y_bottom = box[3]
+                                        pixel_pos = (x_center, y_bottom)
+                                        
+                                        # Gerçek dünya koordinatına dönüştür
+                                        world_pos = self._pixel_to_world(pixel_pos)
+                                        if world_pos is not None:
+                                            # Hız takibini güncelle
+                                            self._update_speed_tracking(id, pixel_pos, world_pos, time.time())
+                                            
+                                            # Hızı hesapla
+                                            speed_kmh, confidence = self._calculate_speed_from_tracking(id)
+                                            
+                                            # Güvenilir hız ve limit kontrolü
+                                            if speed_kmh is not None and confidence == "high" and speed_kmh > ai_config.MIN_SPEED_LIMIT:
+                                                self.log_violation(id, frame, box, f"Hız İhlali ({int(speed_kmh)} km/h)")
                                 
                                 # İhlal veya bölgede olma durumunda kırmızı ile ez
                                 if is_in_roi:
@@ -491,6 +711,12 @@ class HybridEngine:
                                 
                             self.prev_positions[id] = (cx, cy)
                             label = f"ID: {id}" + (" (SABIT)" if not is_moving else "")
+                            
+                            # YENİ: Hız gösterimi ekle
+                            speed_kmh, confidence = self._calculate_speed_from_tracking(id)
+                            if speed_kmh is not None and confidence is not None:
+                                label += f" | {int(speed_kmh)} km/h ({confidence})"
+                            
                             cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 255, 0), 2)
                             cv2.putText(display_frame, label, (int(box[0]), int(box[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 
@@ -544,10 +770,10 @@ def stats():
     cursor.execute('SELECT COUNT(*) FROM violations'); total = cursor.fetchone()[0]; conn.close()
     return jsonify({"total": total, "history": history})
 
-@app.route('/video_feed/<int:cam_id>')
+@app.route('/video_feed/<cam_id>')
 def video_feed(cam_id):
     def generate():
-        engine = cameras.get(cam_id)
+        engine = cameras.get(int(cam_id)) if cam_id.isdigit() else cameras.get(cam_id)
         while True:
             if engine:
                 frame = engine.get_frame()

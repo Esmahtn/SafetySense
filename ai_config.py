@@ -9,13 +9,34 @@
 # yolo11m.pt (Medium) - Orta hız, yüksek doğruluk
 MODEL_NAME = "yolo11n.pt"
 
-# 1. HIZ TESPİT AYARLARI
+# 1. HIZ TESPİT AYARLARI (HOMOGRAPHY TABANLI)
 # ---------------------------------------------------------
-SPEED_ROI_DISTANCE = 27.0  # Ekranda çizilen pembe alanın gerçek uzunluğu (Metre)
-MIN_SPEED_LIMIT = 20.0     # İhlal sayılması için gereken minimum hız (KM/H)
-SPEED_CALC_MIN_DURATION = 1.0 # Hız hesabı için gereken minimum süre (Saniye). Kısa süreli hatalı tespitleri eler.
-SPEED_CORRECTION_FACTOR = 1.0 # Hız düzeltme katsayısı (Hızlar hep 2 katıysa 0.5 yapın)
-ENABLE_SPEED_DETECTION = False # Hız tespitini aç/kapat
+# Homography için görüntü noktaları (piksel koordinatları) - KAMERANIZA GÖRE AYARLAYIN
+# Sol-alt, Sağ-alt, Sağ-üst, Sol-üst sırasıyla
+HOMOGRAPHY_IMAGE_POINTS = [
+    [100, 450],   # Sol-alt
+    [700, 450],   # Sağ-alt  
+    [700, 100],   # Sağ-üst
+    [100, 100]    # Sol-üst
+]
+
+# Homography için gerçek dünya noktaları (metre koordinatları)
+# Sol-alt (0,0), Sağ-alt (genişlik,0), Sağ-üst (genişlik,uzunluk), Sol-üst (0,uzunluk)
+HOMOGRAPHY_WORLD_POINTS = [
+    [0, 0],       # Sol-alt (başlangıç noktası)
+    [4, 0],       # Sağ-alt (4 metre genişlik)
+    [4, 20],      # Sağ-üst (20 metre uzunluk)
+    [0, 20]       # Sol-üst
+]
+
+MIN_SPEED_LIMIT = 25.0     # İhlal sayılması için gereken minimum hız (KM/H)
+ENABLE_SPEED_DETECTION = True # Hız tespitini aç/kapat
+
+# HESAPLAMA AYARLARI
+MIN_TRACKING_FRAMES = 5     # Minimum takip frame sayısı (altı: güvenilmez) - DÜŞÜRÜLDÜ
+CONFIDENT_TRACKING_FRAMES = 10  # Güvenilir hız için minimum frame - DÜŞÜRÜLDÜ
+MAX_MISSING_FRAMES = 3      # Tespit kaybı toleransı (frame) - DÜŞÜRÜLDÜ
+SPEED_SMOOTHING_WINDOW = 3  # Moving average pencere boyutu - DÜŞÜRÜLDÜ
 
 # 2. DOĞRULUK VE TESPİT AYARLARI (YOLO)
 # ---------------------------------------------------------

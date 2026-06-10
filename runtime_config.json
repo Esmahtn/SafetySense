@@ -1,10 +1,20 @@
 {
     "cameras": {
         "1": {
-            "name": "1. Koridor",
-            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch49_20260422112301_20260422113058_ters_yön.avi",
+            "name": "ANA_KORIDOR",
+            "source": "rtsp://admin:admin1234@192.168.12.129:554/cam/realmonitor?channel=1&subtype=0",
             "tasks": [
                 {
+                    "middleLine": [
+                        [
+                            360,
+                            32
+                        ],
+                        [
+                            360,
+                            275
+                        ]
+                    ],
                     "roi": [
                         [
                             383,
@@ -28,8 +38,8 @@
             ]
         },
         "2": {
-            "name": "2. Koridor",
-            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch45_20260422112303_20260422113058_güvensiz.avi",
+            "name": "GUVENSIZ_BOLGE",
+            "source": "rtsp://admin:admin1234@192.168.12.125:554/cam/realmonitor?channel=1&subtype=0",
             "tasks": [
                 {
                     "roi": [
@@ -87,8 +97,8 @@
             ]
         },
         "3": {
-            "name": "3. Koridor",
-            "source": "c:\\Users\\bplas\\Desktop\\video\\192.168.12.5_ch50_20260422112304_20260422113058_hız.avi",
+            "name": "HIZ_KORIDORU",
+            "source": "rtsp://admin:admin1234@192.168.12.130:554/cam/realmonitor?channel=1&subtype=0",
             "tasks": [
                 {
                     "roi": [
@@ -112,6 +122,16 @@
                     "type": "speed"
                 },
                 {
+                    "middleLine": [
+                        [
+                            522,
+                            135
+                        ],
+                        [
+                            208,
+                            440
+                        ]
+                    ],
                     "roi": [
                         [
                             491,
@@ -133,6 +153,11 @@
                     "type": "wrong_way"
                 }
             ]
+        },
+        "5": {
+            "name": "kapı",
+            "source": "rtsp://admin:admin1234@192.168.12.96:554/cam/realmonitor?channel=1&subtype=0",
+            "tasks": []
         }
     }
 }
