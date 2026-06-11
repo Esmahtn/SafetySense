@@ -368,6 +368,10 @@ class HybridEngine:
         self.wrong_way_flagged = {}
         self.pedestrian_flagged = {}
         
+        # ⭐ Ters Yön Oy Tamponu: tek kare gürültüsünü filtrele
+        # {(vehicle_id, task_idx): [dot_product, ...]}  — son 10 kare birikimi
+        self.wrong_way_vote_buffer = {}
+        
         # YENİ HOMOGRAPHY TABANLI HIZ HESAPLAMA STATE
         self.homography_matrix = None
         self.speed_tracking = {}  # {object_id: {'positions': [], 'timestamps': [], 'speeds': []}}
@@ -389,6 +393,7 @@ class HybridEngine:
         self.prev_positions.clear(); self.violation_buffer.clear(); self.entry_times.clear()
         self.wrong_way_flagged.clear()
         self.pedestrian_flagged.clear()
+        self.wrong_way_vote_buffer.clear()
         # YENİ: Homography matrisini sıfırla
         self.homography_matrix = None
         self.speed_tracking.clear()
@@ -637,6 +642,7 @@ class HybridEngine:
                                 if not roi_confirmed:
                                     self.wrong_way_flagged.pop(flag_key, None)
                                     self.pedestrian_flagged.pop(flag_key, None)
+                                    self.wrong_way_vote_buffer.pop(flag_key, None)
                                 
                                 if roi_confirmed and is_moving:  # Hareket kontrolü geri getirildi
                                     t_type = task['type']
@@ -647,30 +653,39 @@ class HybridEngine:
                                                 px, py = self.prev_positions[id]
                                                 # Araç yeterince hareket etmiyor mu? Hareketsiz aracı filtrele
                                                 move_dist = math.sqrt((cx - px)**2 + (cy - py)**2)
-                                                if move_dist >= 5:  # 5 piksel altı hareketi yok say
+                                                if move_dist >= 8:  # 8 piksel altı hareketi yok say
                                                     if 'middleLine' in task and len(task['middleLine']) >= 2:
                                                         # Manuel orta çizgi kullan - noktaları frame boyutuna ölçekle
                                                         middle_line = task['middleLine']
-                                                        # middleLine 800x450 referans koordinatlarında kaydedildi,
-                                                        # frame boyutuna ölçekliyoruz
                                                         line_start = np.array([middle_line[0][0] * sx, middle_line[0][1] * sy])
                                                         line_end   = np.array([middle_line[1][0] * sx, middle_line[1][1] * sy])
-                                                        # Çizgi yönü vektörü (doğru yön)
                                                         line_vector = line_end - line_start
                                                         line_len = np.linalg.norm(line_vector)
                                                         if line_len >= 1e-6:
                                                             line_vector = line_vector / line_len
-                                                            # Araç hareket vektörü
                                                             vehicle_vector = np.array([cx - px, cy - py], dtype=float)
                                                             v_len = np.linalg.norm(vehicle_vector)
                                                             if v_len > 1e-6:
                                                                 vehicle_vector = vehicle_vector / v_len
-                                                                # Dot product: negatif ise araç ters yönde gidiyor
-                                                                dot_product = np.dot(line_vector, vehicle_vector)
-                                                                if dot_product < -0.4:  # Ters yön eşiği
-                                                                    # ROI girisi basina sadece 1 kez alarm
-                                                                    self.wrong_way_flagged[flag_key] = True
-                                                                    self.log_violation(id, frame, box, "Ters Yön")
+                                                                dot_product = float(np.dot(line_vector, vehicle_vector))
+                                                                
+                                                                # ⭐ Oy Tamponu: son 10 karedeki dot product'ları biriktir
+                                                                if flag_key not in self.wrong_way_vote_buffer:
+                                                                    self.wrong_way_vote_buffer[flag_key] = []
+                                                                buf = self.wrong_way_vote_buffer[flag_key]
+                                                                buf.append(dot_product)
+                                                                if len(buf) > 10:
+                                                                    buf.pop(0)
+                                                                
+                                                                # Karar: en az 10 kare birikmiş VE 6'sında ters yön
+                                                                # ayrıca ortalama da negatif olmalı (gürültü kalkanı)
+                                                                if len(buf) >= 10:
+                                                                    ters_oy = sum(1 for d in buf if d < -0.4)
+                                                                    ortalama = sum(buf) / len(buf)
+                                                                    if ters_oy >= 6 and ortalama < -0.3:
+                                                                        self.wrong_way_flagged[flag_key] = True
+                                                                        self.wrong_way_vote_buffer.pop(flag_key, None)
+                                                                        self.log_violation(id, frame, box, "Ters Yön")
                                                     else:
                                                         # ROI'nin merkezine göre tespit (eski yöntem - geçiş bazlı)
                                                         roi_y_coords = [p[1] for p in roi]
