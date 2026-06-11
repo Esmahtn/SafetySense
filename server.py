@@ -406,7 +406,13 @@ class HybridEngine:
         v_cat = v_type.split('(')[0].strip()
         for ts, ax, ay, atype in self.alarm_ledger:
             if atype.split('(')[0].strip() == v_cat:
-                if math.sqrt((cx-ax)**2 + (cy-ay)**2) < 250 and (now - ts) < 20: return
+                dist = math.sqrt((cx-ax)**2 + (cy-ay)**2)
+                # Yaya ihlalinde dar eşik: aynı kişinin mükerrer alarmını önle ama
+                # yanındaki başka bir kişiyi engelleme
+                if v_cat == "Yaya İhlali":
+                    if dist < 60 and (now - ts) < 5: return
+                else:
+                    if dist < 250 and (now - ts) < 20: return
 
         with shared_violation_lock:
             key = f"{vehicle_id}_{v_cat}"
