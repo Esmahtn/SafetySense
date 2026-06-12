@@ -287,40 +287,129 @@ def save_email_config(cfg):
     with open(EMAIL_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
+def _send_email_direct(violation_data):
+    """SMTP üzerinden doğrudan mail gönderir (hata fırlatabilir)"""
+    cfg = load_email_config()
+    if not cfg.get("enabled"):
+        return True # Eğer kapalıysa gönderilmiş say
+    if not cfg.get("sender_email") or not cfg.get("recipient_email"):
+        return False # Gönderici veya alıcı yoksa başarısız say
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[SafetySense] Yeni İhlal: {violation_data.get('type', '')}"
+    msg["From"] = cfg["sender_email"]
+    msg["To"] = cfg["recipient_email"]
+
+    body = f"""
+    <html><body style='font-family:Arial,sans-serif;background:#111;color:#eee;padding:20px;'>
+      <h2 style='color:#e53e3e;'>🚨 Yeni Güvenlik İhlali Tespit Edildi</h2>
+      <table style='border-collapse:collapse;width:100%;'>
+        <tr><td style='padding:8px;color:#aaa;'>İhlal Türü</td><td style='padding:8px;color:#fff;font-weight:bold;'>{violation_data.get('type','')}</td></tr>
+        <tr><td style='padding:8px;color:#aaa;'>Kamera</td><td style='padding:8px;'>{violation_data.get('cam_name','')}</td></tr>
+        <tr><td style='padding:8px;color:#aaa;'>Zaman</td><td style='padding:8px;'>{violation_data.get('time','')}</td></tr>
+        <tr><td style='padding:8px;color:#aaa;'>Kayıt ID</td><td style='padding:8px;'>#{violation_data.get('db_id','')}</td></tr>
+      </table>
+      <p style='color:#666;margin-top:20px;font-size:12px;'>Bu bildirim SafetySense AI sistemi tarafından otomatik gönderilmiştir.</p>
+    </body></html>
+    """
+    msg.attach(MIMEText(body, "html"))
+
+    with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"])) as server:
+        server.starttls()
+        server.login(cfg["sender_email"], cfg["sender_password"])
+        server.sendmail(cfg["sender_email"], cfg["recipient_email"], msg.as_string())
+    return True
+
 def send_violation_email(violation_data):
-    """Send an email notification for a new violation (runs in background thread)."""
+    """Mail gönderme işlemini veritabanı kuyruğuna ekler (anında döner)"""
     try:
-        cfg = load_email_config()
-        if not cfg.get("enabled"):
-            return
-        if not cfg.get("sender_email") or not cfg.get("recipient_email"):
-            return
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[SafetySense] Yeni İhlal: {violation_data.get('type', '')}"
-        msg["From"] = cfg["sender_email"]
-        msg["To"] = cfg["recipient_email"]
-
-        body = f"""
-        <html><body style='font-family:Arial,sans-serif;background:#111;color:#eee;padding:20px;'>
-          <h2 style='color:#e53e3e;'>🚨 Yeni Güvenlik İhlali Tespit Edildi</h2>
-          <table style='border-collapse:collapse;width:100%;'>
-            <tr><td style='padding:8px;color:#aaa;'>İhlal Türü</td><td style='padding:8px;color:#fff;font-weight:bold;'>{violation_data.get('type','')}</td></tr>
-            <tr><td style='padding:8px;color:#aaa;'>Kamera</td><td style='padding:8px;'>{violation_data.get('cam_name','')}</td></tr>
-            <tr><td style='padding:8px;color:#aaa;'>Zaman</td><td style='padding:8px;'>{violation_data.get('time','')}</td></tr>
-            <tr><td style='padding:8px;color:#aaa;'>Kayıt ID</td><td style='padding:8px;'>#{violation_data.get('db_id','')}</td></tr>
-          </table>
-          <p style='color:#666;margin-top:20px;font-size:12px;'>Bu bildirim SafetySense AI sistemi tarafından otomatik gönderilmiştir.</p>
-        </body></html>
-        """
-        msg.attach(MIMEText(body, "html"))
-
-        with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"])) as server:
-            server.starttls()
-            server.login(cfg["sender_email"], cfg["sender_password"])
-            server.sendmail(cfg["sender_email"], cfg["recipient_email"], msg.as_string())
+        conn = sqlite3.connect(DB_PATH, timeout=20)
+        cursor = conn.cursor()
+        payload_json = json.dumps(violation_data, ensure_ascii=False)
+        cursor.execute(
+            "INSERT INTO email_queue (payload, attempts, status, last_attempt) VALUES (?, 0, 'pending', NULL)",
+            (payload_json,)
+        )
+        conn.commit()
+        conn.close()
+        # Worker thread'i hemen uyandır
+        email_queue_event.set()
     except Exception as e:
-        print(f"[EMAIL] Gönderim hatası: {e}")
+        print(f"[QUEUE] Kuyruğa ekleme hatası: {e}")
+
+def email_queue_worker():
+    """Arka planda mail kuyruğunu işleyen thread"""
+    print("[QUEUE] E-Posta kuyruk işlemcisi başlatıldı.")
+    while True:
+        try:
+            # Tetiklenmeyi bekle veya 10 saniyede bir kontrol et
+            email_queue_event.wait(timeout=10)
+            email_queue_event.clear()
+            
+            cfg = load_email_config()
+            if not cfg.get("enabled"):
+                time.sleep(5)
+                continue
+                
+            conn = sqlite3.connect(DB_PATH, timeout=20)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Gönderilmeyi bekleyen veya başarısız olup tekrar denenecek kayıtları çek (en fazla 5 deneme)
+            # Son denemeden sonra en az 60 saniye geçmiş olmalı
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                """
+                SELECT id, payload, attempts 
+                FROM email_queue 
+                WHERE status = 'pending' 
+                   OR (status = 'failed_retry' AND attempts < 5 AND (last_attempt IS NULL OR datetime(last_attempt) < datetime(?, '-1 minute')))
+                ORDER BY id ASC
+                """,
+                (now_str,)
+            )
+            jobs = cursor.fetchall()
+            
+            if not jobs:
+                conn.close()
+                continue
+                
+            for job in jobs:
+                job_id = job['id']
+                payload = json.loads(job['payload'])
+                attempts = job['attempts'] + 1
+                
+                try:
+                    success = _send_email_direct(payload)
+                    if success:
+                        cursor.execute(
+                            "UPDATE email_queue SET status = 'sent', attempts = ?, last_attempt = ? WHERE id = ?",
+                            (attempts, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id)
+                        )
+                        print(f"[QUEUE] E-Posta başarıyla gönderildi: Job #{job_id}")
+                    else:
+                        cursor.execute(
+                            "UPDATE email_queue SET status = 'failed', attempts = ?, error_msg = 'Geçersiz mail ayarları', last_attempt = ? WHERE id = ?",
+                            (attempts, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id)
+                        )
+                except Exception as ex:
+                    err_msg = str(ex)
+                    new_status = 'failed_retry' if attempts < 5 else 'failed'
+                    cursor.execute(
+                        "UPDATE email_queue SET status = ?, attempts = ?, error_msg = ?, last_attempt = ? WHERE id = ?",
+                        (new_status, attempts, err_msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id)
+                    )
+                    print(f"[QUEUE] E-Posta gönderim hatası (Job #{job_id}, Deneme {attempts}/5): {err_msg}")
+                
+                conn.commit()
+                # SMTP sunucuyu yormamak için gönderimler arası küçük bir bekleme
+                time.sleep(1.0)
+                
+            conn.close()
+            
+        except Exception as e:
+            print(f"[QUEUE Worker Hatası] {e}")
+            time.sleep(5)
 
 def load_runtime_config():
     if os.path.exists(CONFIG_PATH):
@@ -336,8 +425,10 @@ def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=20); cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;"); cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.execute('CREATE TABLE IF NOT EXISTS violations (id INTEGER PRIMARY KEY AUTOINCREMENT, vehicle_id INTEGER, cam_name TEXT, type TEXT, timestamp DATETIME, image_path TEXT, video_path TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, attempts INTEGER DEFAULT 0, status TEXT DEFAULT \'pending\', error_msg TEXT, last_attempt DATETIME)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_violations_timestamp ON violations(timestamp)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_violations_cam_name ON violations(cam_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_email_queue_status ON email_queue(status)')
     conn.commit(); conn.close()
 
 def cleanup_old_violations():
@@ -363,6 +454,11 @@ def cleanup_old_violations():
         # Veritabanı kayıtlarını sil
         cursor.execute('DELETE FROM violations WHERE timestamp < ?', (cutoff_date,))
         deleted_count = cursor.rowcount
+        
+        # Eski e-posta kuyruk kayıtlarını temizle (7 günden eski gönderilmiş veya başarısız olanları)
+        cutoff_queue = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('DELETE FROM email_queue WHERE last_attempt < ? AND status IN (\'sent\', \'failed\')', (cutoff_queue,))
+        
         conn.commit(); conn.close()
         
         if deleted_count > 0:
@@ -395,6 +491,7 @@ init_db()
 sse_clients, cameras = [], {}
 shared_violation_log = {}
 shared_violation_lock = Lock()
+email_queue_event = threading.Event()
 
 class HybridEngine:
     def __init__(self, cam_id, name, source, tasks=[], homography=None):
@@ -1028,4 +1125,9 @@ if __name__ == '__main__':
     cleanup_thread = threading.Thread(target=auto_cleanup_thread, daemon=True)
     cleanup_thread.start()
     print("[Temizleme] Otomatik veritabanı temizleme thread'i başlatıldı (15 günlük)")
+    
+    # E-Posta kuyruk işlemci thread'ini başlat
+    queue_thread = threading.Thread(target=email_queue_worker, daemon=True)
+    queue_thread.start()
+    
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
