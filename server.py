@@ -336,6 +336,8 @@ def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=20); cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;"); cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.execute('CREATE TABLE IF NOT EXISTS violations (id INTEGER PRIMARY KEY AUTOINCREMENT, vehicle_id INTEGER, cam_name TEXT, type TEXT, timestamp DATETIME, image_path TEXT, video_path TEXT)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_violations_timestamp ON violations(timestamp)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_violations_cam_name ON violations(cam_name)')
     conn.commit(); conn.close()
 
 def cleanup_old_violations():
@@ -395,9 +397,10 @@ shared_violation_log = {}
 shared_violation_lock = Lock()
 
 class HybridEngine:
-    def __init__(self, cam_id, name, source, tasks=[]):
+    def __init__(self, cam_id, name, source, tasks=[], homography=None):
         self.cam_id, self.name, self.source = cam_id, name, source
         self.tasks = tasks 
+        self.homography_config = homography
         self.cap = SmartCamera(source, simulate_live=False)
         self.cap.start()
         self.running = True
@@ -440,6 +443,7 @@ class HybridEngine:
             self.source = new_source
             self.cap.release(); self.cap = SmartCamera(new_source, simulate_live=False); self.cap.start()
         self.tasks = cam_data.get("tasks", [])
+        self.homography_config = cam_data.get("homography")
         self.prev_positions.clear(); self.position_history.clear(); self.violation_buffer.clear(); self.entry_times.clear()
         self.wrong_way_flagged.clear()
         self.pedestrian_flagged.clear()
@@ -506,10 +510,16 @@ class HybridEngine:
             return self.homography_matrix
         
         try:
-            image_pts = np.array(ai_config.HOMOGRAPHY_IMAGE_POINTS, dtype="float32")
-            world_pts = np.array(ai_config.HOMOGRAPHY_WORLD_POINTS, dtype="float32")
+            h_cfg = self.homography_config if hasattr(self, 'homography_config') else None
+            if h_cfg and "image_points" in h_cfg and "world_points" in h_cfg:
+                image_pts = np.array(h_cfg["image_points"], dtype="float32")
+                world_pts = np.array(h_cfg["world_points"], dtype="float32")
+            else:
+                image_pts = np.array(ai_config.HOMOGRAPHY_IMAGE_POINTS, dtype="float32")
+                world_pts = np.array(ai_config.HOMOGRAPHY_WORLD_POINTS, dtype="float32")
+                
             self.homography_matrix = cv2.getPerspectiveTransform(image_pts, world_pts)
-            print(f"[{self.name}] Homography matrisi hesaplandı")
+            print(f"[{self.name}] Homography matrisi hesaplandı (Özel ayarlar kullanıldı: {h_cfg is not None})")
             return self.homography_matrix
         except Exception as e:
             print(f"[{self.name}] Homography matrisi hesaplanamadı: {e}")
@@ -808,6 +818,16 @@ class HybridEngine:
 
     def get_frame(self): return self.current_frame
 
+    def get_status(self):
+        if not self.running:
+            return "stopped"
+        if self.cap is None:
+            return "offline"
+        if self.cap.is_live:
+            return "online" if self.cap.ret else "connecting"
+        else:
+            return "online" if self.cap.isOpened() else "offline"
+
 def notify(data):
     msg = json.dumps(data)
     for q in sse_clients: q.put(msg)
@@ -816,7 +836,7 @@ def main():
     config = load_runtime_config()
     for cam_id_str, cam_data in config.get("cameras", {}).items():
         cam_id = int(cam_id_str)
-        engine = HybridEngine(cam_id, cam_data['name'], cam_data['source'], cam_data.get('tasks', []))
+        engine = HybridEngine(cam_id, cam_data['name'], cam_data['source'], cam_data.get('tasks', []), cam_data.get('homography'))
         engine.on_violation = notify
         cameras[cam_id] = engine
         threading.Thread(target=engine.process, daemon=True).start()
@@ -849,7 +869,8 @@ def stats():
     cursor.execute('SELECT * FROM violations ORDER BY timestamp DESC'); rows = cursor.fetchall(); history = []
     for r in rows: history.append({"id": r['id'], "vehicle_id": r['vehicle_id'], "cam_name": r['cam_name'], "type": r['type'], "time": r['timestamp'], "img": r['image_path']})
     cursor.execute('SELECT COUNT(*) FROM violations'); total = cursor.fetchone()[0]; conn.close()
-    return jsonify({"total": total, "history": history})
+    camera_status = {str(cid): {"name": engine.name, "status": engine.get_status()} for cid, engine in cameras.items()}
+    return jsonify({"total": total, "history": history, "cameras": camera_status})
 
 @app.route('/video_feed/<cam_id>')
 def video_feed(cam_id):
@@ -903,7 +924,7 @@ def api_start_camera():
     
     if cid not in cameras:
         print(f"[*] Yeni kamera motoru oluşturuluyor: {cam_data['name']} (ID: {cid})")
-        engine = HybridEngine(cid, cam_data['name'], cam_data['source'], cam_data.get('tasks', []))
+        engine = HybridEngine(cid, cam_data['name'], cam_data['source'], cam_data.get('tasks', []), cam_data.get('homography'))
         engine.on_violation = notify
         cameras[cid] = engine
         t = threading.Thread(target=engine.process, daemon=True)
