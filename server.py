@@ -338,6 +338,57 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS violations (id INTEGER PRIMARY KEY AUTOINCREMENT, vehicle_id INTEGER, cam_name TEXT, type TEXT, timestamp DATETIME, image_path TEXT, video_path TEXT)')
     conn.commit(); conn.close()
 
+def cleanup_old_violations():
+    """15 günden eski ihlal kayıtlarını ve ilgili görselleri siler"""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=20); cursor = conn.cursor()
+        
+        # 15 günden eski kayıtları bul
+        cutoff_date = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('SELECT id, image_path FROM violations WHERE timestamp < ?', (cutoff_date,))
+        old_records = cursor.fetchall()
+        
+        # Görsel dosyalarını sil
+        for record_id, image_path in old_records:
+            if image_path:
+                img_full_path = os.path.join(VIOLATIONS_DIR, image_path)
+                if os.path.exists(img_full_path):
+                    try:
+                        os.remove(img_full_path)
+                    except Exception as e:
+                        print(f"Görsel silme hatası: {e}")
+        
+        # Veritabanı kayıtlarını sil
+        cursor.execute('DELETE FROM violations WHERE timestamp < ?', (cutoff_date,))
+        deleted_count = cursor.rowcount
+        conn.commit(); conn.close()
+        
+        if deleted_count > 0:
+            print(f"[Temizleme] {deleted_count} eski kayıt silindi ({cutoff_date} öncesi)")
+        
+    except Exception as e:
+        print(f"[Temizleme Hatası] {e}")
+
+def auto_cleanup_thread():
+    """Her gün saat 00:00'da otomatik temizleme çalıştırır"""
+    while True:
+        try:
+            # Şu anki zaman
+            now = datetime.now()
+            
+            # Yarın 00:00'ya kadar bekle
+            tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            sleep_seconds = (tomorrow - now).total_seconds()
+            print(f"[Temizleme] Bir sonraki temizleme: {tomorrow} ({sleep_seconds:.0f} saniye sonra)")
+            time.sleep(sleep_seconds)
+            
+            # Temizleme yap
+            cleanup_old_violations()
+            
+        except Exception as e:
+            print(f"[Temizleme Thread Hatası] {e}")
+            time.sleep(3600)  # Hata olursa 1 saat bekle
+
 init_db()
 sse_clients, cameras = [], {}
 shared_violation_log = {}
@@ -358,18 +409,17 @@ class HybridEngine:
         
         # Core State
         self.prev_positions = {} 
+        self.position_history = {} 
         self.violation_buffer = {} 
         self.entry_times = {} 
         self.stationary_counters = {}
         self.alarm_ledger = []
         
         # Ters yön + Yaya: kişi/araç başına ROI girişi başına sadece 1 kez alarm tetikle
-        # {(vehicle_id, task_idx): True}  — ROI'den çıkınca silinir
         self.wrong_way_flagged = {}
         self.pedestrian_flagged = {}
         
         # ⭐ Ters Yön Oy Tamponu: tek kare gürültüsünü filtrele
-        # {(vehicle_id, task_idx): [dot_product, ...]}  — son 10 kare birikimi
         self.wrong_way_vote_buffer = {}
         
         # YENİ HOMOGRAPHY TABANLI HIZ HESAPLAMA STATE
@@ -378,19 +428,19 @@ class HybridEngine:
         
         self.current_frame = None
         self.on_violation = None
-
+ 
     def stop(self):
         self.running = False
         if self.cap: self.cap.release()
         print(f"Engine durduruldu: {self.name}")
-
+ 
     def update_config(self, cam_data):
         new_source = cam_data.get("source")
         if new_source and new_source != self.source:
             self.source = new_source
             self.cap.release(); self.cap = SmartCamera(new_source, simulate_live=False); self.cap.start()
         self.tasks = cam_data.get("tasks", [])
-        self.prev_positions.clear(); self.violation_buffer.clear(); self.entry_times.clear()
+        self.prev_positions.clear(); self.position_history.clear(); self.violation_buffer.clear(); self.entry_times.clear()
         self.wrong_way_flagged.clear()
         self.pedestrian_flagged.clear()
         self.wrong_way_vote_buffer.clear()
@@ -407,10 +457,8 @@ class HybridEngine:
         for ts, ax, ay, atype in self.alarm_ledger:
             if atype.split('(')[0].strip() == v_cat:
                 dist = math.sqrt((cx-ax)**2 + (cy-ay)**2)
-                # Yaya ihlalinde dar eşik: aynı kişinin mükerrer alarmını önle ama
-                # yanındaki başka bir kişiyi engelleme
                 if v_cat == "Yaya İhlali":
-                    if dist < 60 and (now - ts) < 5: return
+                    if dist < 50 and (now - ts) < 5: return
                 else:
                     if dist < 250 and (now - ts) < 20: return
 
@@ -621,6 +669,13 @@ class HybridEngine:
                         for box, id, cls in zip(boxes, ids, clss):
                             cx, cy = int((box[0]+box[2])/2), int(box[3])
                             
+                            # Pozisyon geçmişini güncelle
+                            if id not in self.position_history:
+                                self.position_history[id] = []
+                            self.position_history[id].append((cx, cy))
+                            if len(self.position_history[id]) > 30:
+                                self.position_history[id].pop(0)
+                            
                             # Hareketsiz Nesne Kontrolü
                             is_moving = True
                             if id in self.prev_positions:
@@ -644,102 +699,107 @@ class HybridEngine:
                                 
                                 flag_key = (id, idx)
                                 
-                                # ROI dışına çıkınca (histerezis onaylı) flagleri temizle
+                                # ROI dışına çıkınca (histerezis onaylı) oy tamponunu sıfırla, ama bayrakları koru (ID aktif olduğu sürece çift alarmı önler)
                                 if not roi_confirmed:
-                                    self.wrong_way_flagged.pop(flag_key, None)
-                                    self.pedestrian_flagged.pop(flag_key, None)
                                     self.wrong_way_vote_buffer.pop(flag_key, None)
                                 
-                                if roi_confirmed and is_moving:  # Hareket kontrolü geri getirildi
+                                if roi_confirmed and is_moving:
                                     t_type = task['type']
                                     if t_type == "wrong_way" and cls in [2, 3, 5, 7]:
-                                        # Bu araç bu ROI girişinde zaten alarm verdiyse atla
                                         if flag_key not in self.wrong_way_flagged:
-                                            if id in self.prev_positions:
-                                                px, py = self.prev_positions[id]
-                                                # Araç yeterince hareket etmiyor mu? Hareketsiz aracı filtrele
-                                                move_dist = math.sqrt((cx - px)**2 + (cy - py)**2)
-                                                if move_dist >= 8:  # 8 piksel altı hareketi yok say
-                                                    if 'middleLine' in task and len(task['middleLine']) >= 2:
-                                                        # Manuel orta çizgi kullan - noktaları frame boyutuna ölçekle
-                                                        middle_line = task['middleLine']
-                                                        line_start = np.array([middle_line[0][0] * sx, middle_line[0][1] * sy])
-                                                        line_end   = np.array([middle_line[1][0] * sx, middle_line[1][1] * sy])
-                                                        line_vector = line_end - line_start
-                                                        line_len = np.linalg.norm(line_vector)
-                                                        if line_len >= 1e-6:
-                                                            line_vector = line_vector / line_len
-                                                            vehicle_vector = np.array([cx - px, cy - py], dtype=float)
-                                                            v_len = np.linalg.norm(vehicle_vector)
-                                                            if v_len > 1e-6:
-                                                                vehicle_vector = vehicle_vector / v_len
-                                                                dot_product = float(np.dot(line_vector, vehicle_vector))
-                                                                
-                                                                # ⭐ Oy Tamponu: son 10 karedeki dot product'ları biriktir
-                                                                if flag_key not in self.wrong_way_vote_buffer:
-                                                                    self.wrong_way_vote_buffer[flag_key] = []
-                                                                buf = self.wrong_way_vote_buffer[flag_key]
-                                                                buf.append(dot_product)
-                                                                if len(buf) > 10:
-                                                                    buf.pop(0)
-                                                                
-                                                                # Karar: en az 10 kare birikmiş VE 6'sında ters yön
-                                                                # ayrıca ortalama da negatif olmalı (gürültü kalkanı)
-                                                                if len(buf) >= 10:
-                                                                    ters_oy = sum(1 for d in buf if d < -0.4)
-                                                                    ortalama = sum(buf) / len(buf)
-                                                                    if ters_oy >= 6 and ortalama < -0.3:
-                                                                        self.wrong_way_flagged[flag_key] = True
-                                                                        self.wrong_way_vote_buffer.pop(flag_key, None)
-                                                                        self.log_violation(id, frame, box, "Ters Yön")
-                                                    else:
-                                                        # ROI'nin merkezine göre tespit (eski yöntem - geçiş bazlı)
-                                                        roi_y_coords = [p[1] for p in roi]
-                                                        roi_middle_y = int((min(roi_y_coords) + max(roi_y_coords)) / 2)
-                                                        if py > roi_middle_y and cy <= roi_middle_y:
-                                                            self.wrong_way_flagged[flag_key] = True
-                                                            self.log_violation(id, frame, box, "Ters Yön")
+                                            # Kararlı hareket yönü tespiti için geçmiş pozisyonları tara
+                                            history = self.position_history.get(id, [])
+                                            hx, hy = None, None
+                                            # En az 15 piksel deplasman yapan en eski noktayı seç
+                                            for hpx, hpy in history:
+                                                if math.sqrt((cx - hpx)**2 + (cy - hpy)**2) >= 15:
+                                                    hx, hy = hpx, hpy
+                                                    break
+                                            
+                                            # Deplasman küçükse ama yeterince kare geçtiyse en eski noktayı baz al
+                                            if hx is None and len(history) >= 8:
+                                                hx, hy = history[0]
+                                                
+                                            if hx is not None:
+                                                if 'middleLine' in task and len(task['middleLine']) >= 2:
+                                                    middle_line = task['middleLine']
+                                                    line_start = np.array([middle_line[0][0] * sx, middle_line[0][1] * sy])
+                                                    line_end   = np.array([middle_line[1][0] * sx, middle_line[1][1] * sy])
+                                                    line_vector = line_end - line_start
+                                                    line_len = np.linalg.norm(line_vector)
+                                                    if line_len >= 1e-6:
+                                                        line_vector = line_vector / line_len
+                                                        vehicle_vector = np.array([cx - hx, cy - hy], dtype=float)
+                                                        v_len = np.linalg.norm(vehicle_vector)
+                                                        # En az 8 piksel deplasman varsa yön hesapla
+                                                        if v_len >= 8:
+                                                            vehicle_vector = vehicle_vector / v_len
+                                                            dot_product = float(np.dot(line_vector, vehicle_vector))
+                                                            
+                                                            if flag_key not in self.wrong_way_vote_buffer:
+                                                                self.wrong_way_vote_buffer[flag_key] = []
+                                                            buf = self.wrong_way_vote_buffer[flag_key]
+                                                            buf.append(dot_product)
+                                                            if len(buf) > 6:
+                                                                buf.pop(0)
+                                                            
+                                                            # En az 3 oy birikmeli ve oyların %60'ından fazlası ters yön (< -0.5) olmalı
+                                                            if len(buf) >= 3:
+                                                                ters_oy = sum(1 for d in buf if d < -0.5)
+                                                                if ters_oy >= (len(buf) * 0.6):
+                                                                    self.wrong_way_flagged[flag_key] = True
+                                                                    self.wrong_way_vote_buffer.pop(flag_key, None)
+                                                                    self.log_violation(id, frame, box, "Ters Yön")
+                                                else:
+                                                    # Manuel orta çizgi yoksa ROI merkezine göre geçiş tespiti
+                                                    roi_y_coords = [p[1] for p in roi]
+                                                    roi_middle_y = int((min(roi_y_coords) + max(roi_y_coords)) / 2)
+                                                    if hy > roi_middle_y and cy <= roi_middle_y:
+                                                        self.wrong_way_flagged[flag_key] = True
+                                                        self.log_violation(id, frame, box, "Ters Yön")
                                                 
                                     elif t_type == "pedestrian" and cls == 0:
-                                        # ROI girisi basina sadece 1 kez yaya alarmi
                                         if flag_key not in self.pedestrian_flagged:
                                             self.pedestrian_flagged[flag_key] = True
                                             self.log_violation(id, frame, box, "Yaya İhlali")
                                         
                                     elif t_type == "speed" and cls in [2,3,5,7]:
-                                        # YENİ: Homography tabanlı hız hesaplama
-                                        # Bounding box alt orta noktasını al
                                         x_center = (box[0] + box[2]) / 2
                                         y_bottom = box[3]
                                         pixel_pos = (x_center, y_bottom)
-                                        
-                                        # Gerçek dünya koordinatına dönüştür
                                         world_pos = self._pixel_to_world(pixel_pos)
                                         if world_pos is not None:
-                                            # Hız takibini güncelle
                                             self._update_speed_tracking(id, pixel_pos, world_pos, time.time())
-                                            
-                                            # Hızı hesapla
                                             speed_kmh, confidence = self._calculate_speed_from_tracking(id)
-                                            
-                                            # Güvenilir hız ve limit kontrolü
                                             if speed_kmh is not None and confidence == "high" and speed_kmh > ai_config.MIN_SPEED_LIMIT:
                                                 self.log_violation(id, frame, box, f"Hız İhlali ({int(speed_kmh)} km/h)")
                                 
-                                # İhlal veya bölgede olma durumunda kırmızı ile ez
                                 if is_in_roi:
                                     cv2.polylines(display_frame, [roi], True, (0, 0, 255), 3)
                                 
                             self.prev_positions[id] = (cx, cy)
                             label = f"ID: {id}" + (" (SABIT)" if not is_moving else "")
                             
-                            # YENİ: Hız gösterimi ekle
                             speed_kmh, confidence = self._calculate_speed_from_tracking(id)
                             if speed_kmh is not None and confidence is not None:
                                 label += f" | {int(speed_kmh)} km/h ({confidence})"
                             
                             cv2.rectangle(display_frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 255, 0), 2)
                             cv2.putText(display_frame, label, (int(box[0]), int(box[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                        
+                        # Aktif olmayan nesne ID'lerini temizle (bellek sızıntısı ve ID çakışmasını engeller)
+                        inactive_ids = set(self.prev_positions.keys()) - set(active_ids)
+                        for inactive_id in inactive_ids:
+                            self.prev_positions.pop(inactive_id, None)
+                            self.position_history.pop(inactive_id, None)
+                            self.stationary_counters.pop(inactive_id, None)
+                            self.speed_tracking.pop(inactive_id, None)
+                            self.violation_buffer.pop(inactive_id, None)
+                            for idx in range(len(self.tasks)):
+                                fk = (inactive_id, idx)
+                                self.wrong_way_flagged.pop(fk, None)
+                                self.pedestrian_flagged.pop(fk, None)
+                                self.wrong_way_vote_buffer.pop(fk, None)
                 
                 preview = cv2.resize(display_frame, (800, 450)); _, buffer = cv2.imencode('.jpg', preview); self.current_frame = buffer.tobytes()
                 time.sleep(0.01)
@@ -943,4 +1003,8 @@ def api_create_user():
 
 if __name__ == '__main__':
     main()
+    # Otomatik temizleme thread'ini başlat
+    cleanup_thread = threading.Thread(target=auto_cleanup_thread, daemon=True)
+    cleanup_thread.start()
+    print("[Temizleme] Otomatik veritabanı temizleme thread'i başlatıldı (15 günlük)")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
